@@ -103,25 +103,94 @@ async def get_portfolio(
             "portfolio": portfolio
         }
     )
+
 @router.post("/{portfolio_id}/holdings")
 async def add_holding(
     portfolio_id: str,
     holding: PortfolioHolding,
     portfolio_service: PortfolioService = Depends()
 ):
-    return await portfolio_service.add_holding(portfolio_id, holding)
+    # Validate holding data
+    if holding.quantity <= Decimal('0'):
+        raise HTTPException(
+            status_code=400,
+            detail="Quantity must be greater than 0"
+        )
+
+    if holding.purchase_price <= Decimal('0'):
+        raise HTTPException(
+            status_code=400,
+            detail="Purchase price must be greater than 0"
+        )
+
+    if holding.purchase_date > datetime.now():
+        raise HTTPException(
+            status_code=400,
+            detail="Purchase date cannot be in the future"
+        )
+
+    try:
+        return await portfolio_service.add_holding(portfolio_id, holding)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error adding holding: {str(e)}"
+        )
 
 @router.get("/new", response_class=HTMLResponse)
-async def show_create_form(request: Request):
-    logging.info("Accessing create form route")  # Debug log
+async def show_create_form(
+    request: Request,
+    stock_service: StockMasterService = Depends()
+):
     try:
+        master_stocks = await stock_service.get_all_stocks()
         return templates.TemplateResponse(
             "portfolio/create.html",
             {
                 "request": request,
-                "master_stocks": []  # We'll add real data later
+                "master_stocks": master_stocks
             }
         )
     except Exception as e:
-        logging.error(f"Error rendering template: {e}")  # Debug log
-        raise HTTPException(status_code=500, detail=str(e)) 
+        logging.error(f"Error rendering template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/{portfolio_id}", response_model=Portfolio)
+async def update_portfolio(
+    portfolio_id: str,
+    portfolio: PortfolioCreate,
+    portfolio_service: PortfolioService = Depends()
+):
+    # Validate portfolio name
+    if not portfolio.name or len(portfolio.name) > 100:
+        raise HTTPException(
+            status_code=400,
+            detail="Portfolio name must be 1-100 characters"
+        )
+
+    try:
+        updated_portfolio = await portfolio_service.update_portfolio(portfolio_id, portfolio)
+        if not updated_portfolio:
+            raise HTTPException(status_code=404, detail="Portfolio not found")
+        return updated_portfolio
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating portfolio: {str(e)}"
+        )
+
+@router.delete("/{portfolio_id}")
+async def delete_portfolio(
+    portfolio_id: str,
+    portfolio_service: PortfolioService = Depends()
+):
+    try:
+        success = await portfolio_service.delete_portfolio(portfolio_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Portfolio not found")
+        return {"message": "Portfolio deleted successfully"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error deleting portfolio: {str(e)}"
+        ) 
