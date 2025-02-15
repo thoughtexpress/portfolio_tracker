@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -26,15 +26,20 @@ app.mount("/static", StaticFiles(directory="web/static"), name="static")
 # Templates
 templates = Jinja2Templates(directory="web/templates")
 
+# Portfolio service
+portfolio_service = PortfolioService()
+
 # Include routers
 app.include_router(portfolios.router, prefix=API_V1_PREFIX)
 
 # Web routes
 @app.get("/")
-async def home(request):
-    portfolio_service = PortfolioService()
+async def home(request: Request):
     portfolios = await portfolio_service.get_all_portfolios()
     return templates.TemplateResponse(
         "portfolio/dashboard.html", 
-        {"request": request, "portfolios": portfolios}
+        {
+            "request": request, 
+            "portfolios": portfolios
+        }
     ) 

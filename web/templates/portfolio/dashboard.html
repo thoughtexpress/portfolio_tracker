@@ -1,46 +1,68 @@
 {% extends "base.html" %}
 
-{% block title %}Portfolio Dashboard{% endblock %}
+{% block title %}Portfolio Tracker{% endblock %}
 
 {% block content %}
-<div class="dashboard">
-    <div class="header">
-        <h1>Portfolio Dashboard</h1>
-        <button onclick="window.location.href='/portfolios/new'" class="btn-primary">Create Portfolio</button>
+<div class="landing-page">
+    <div class="hero-section">
+        <h1>Portfolio Tracker</h1>
+        <p class="subtitle">Track your investments across multiple exchanges in one place</p>
     </div>
-    
-    {% if portfolios %}
-        <div class="portfolio-grid">
-            {% for portfolio in portfolios %}
-            <div class="portfolio-card">
-                <div class="card-header">
-                    <h2>{{ portfolio.name }}</h2>
-                    <span class="currency">{{ portfolio.base_currency }}</span>
-                </div>
-                <div class="card-body">
-                    <div class="value-info">
-                        <p>Total Value: {{ portfolio.total_value }}</p>
-                        <p>Cash Balance: {{ portfolio.cash_balance }}</p>
+
+    <div class="features-section">
+        <div class="feature-card">
+            <h3>Multi-Exchange Support</h3>
+            <p>Track stocks from NSE, NYSE, and more</p>
+        </div>
+        <div class="feature-card">
+            <h3>Real-Time Updates</h3>
+            <p>Get latest stock prices and portfolio valuations</p>
+        </div>
+        <div class="feature-card">
+            <h3>Transaction History</h3>
+            <p>Maintain detailed records of all your trades</p>
+        </div>
+    </div>
+
+    <div class="portfolio-section">
+        <div class="section-header">
+            <h2>Your Portfolios</h2>
+            <button onclick="window.location.href='/portfolios/new'" class="btn-primary">Create Portfolio</button>
+        </div>
+
+        {% if portfolios %}
+            <div class="portfolio-grid">
+                {% for portfolio in portfolios %}
+                <div class="portfolio-card">
+                    <div class="card-header">
+                        <h2>{{ portfolio.name }}</h2>
+                        <span class="currency">{{ portfolio.base_currency }}</span>
                     </div>
-                    <div class="holdings-count">
-                        Holdings: {{ portfolio.holdings|length }}
+                    <div class="card-body">
+                        <div class="value-info">
+                            <p>Total Value: {{ portfolio.total_value }}</p>
+                            <p>Cash Balance: {{ portfolio.cash_balance }}</p>
+                        </div>
+                        <div class="holdings-count">
+                            Holdings: {{ portfolio.holdings|length }}
+                        </div>
+                    </div>
+                    <div class="card-footer">
+                        <a href="/portfolios/{{ portfolio.id }}" class="btn-secondary">View Details</a>
+                        <a href="/portfolios/{{ portfolio.id }}/transactions" class="btn-secondary">Transactions</a>
                     </div>
                 </div>
-                <div class="card-footer">
-                    <a href="/portfolios/{{ portfolio.id }}" class="btn-secondary">View Details</a>
-                    <a href="/portfolios/{{ portfolio.id }}/transactions" class="btn-secondary">Transactions</a>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty-state">
+                <div class="empty-message">
+                    <h2>Start Your Investment Journey</h2>
+                    <p>Create your first portfolio to begin tracking your investments</p>
+                    <button onclick="window.location.href='/portfolios/new'" class="btn-primary">Create Your First Portfolio</button>
                 </div>
             </div>
-            {% endfor %}
-        </div>
-    {% else %}
-        <div class="empty-state">
-            <div class="empty-message">
-                <h2>No Portfolios Yet</h2>
-                <p>Start tracking your investments by creating your first portfolio!</p>
-                <button onclick="window.location.href='/portfolios/new'" class="btn-primary">Create Your First Portfolio</button>
-            </div>
-        </div>
-    {% endif %}
+        {% endif %}
+    </div>
 </div>
 {% endblock %} 

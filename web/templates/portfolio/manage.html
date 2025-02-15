@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Portfolio{% endblock %}
+
+{% block content %}
+<div class="portfolio-manager">
+    <!-- Portfolio List Section -->
+    <div class="portfolio-list">
+        <h2>Your Portfolios</h2>
+        <div class="portfolio-cards">
+            {% for portfolio in portfolios %}
+            <div class="portfolio-card">
+                <h3>{{ portfolio.name }}</h3>
+                <p>Currency: {{ portfolio.base_currency }}</p>
+                <p>Holdings: {{ portfolio.holdings|length }}</p>
+                <div class="card-actions">
+                    <button onclick="editPortfolio('{{ portfolio.id }}')" class="btn-secondary">Edit</button>
+                    <button onclick="deletePortfolio('{{ portfolio.id }}')" class="btn-danger">Delete</button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        <button onclick="showCreateForm()" class="btn-primary">Create New Portfolio</button>
+    </div>
+
+    <!-- Create/Edit Form (Hidden by default) -->
+    <div id="portfolioForm" class="portfolio-form" style="display: none;">
+        <h2 id="formTitle">Create Portfolio</h2>
+        <form id="portfolioDetails">
+            <input type="hidden" id="portfolioId">
+            <div class="form-group">
+                <label for="name">Portfolio Name</label>
+                <input type="text" id="name" required maxlength="100">
+            </div>
+            <div class="form-group">
+                <label for="currency">Base Currency</label>
+                <select id="currency">
+                    <option value="USD">USD</option>
+                    <option value="INR">INR</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Add Stocks</label>
+                <select id="stockSelect">
+                    {% for stock in master_stocks %}
+                    <option value="{{ stock.id }}">{{ stock.symbol }} - {{ stock.name }}</option>
+                    {% endfor %}
+                </select>
+                <input type="number" id="quantity" placeholder="Quantity" min="0" step="0.01">
+                <input type="number" id="price" placeholder="Purchase Price" min="0" step="0.01">
+                <input type="date" id="purchaseDate">
+                <button type="button" onclick="addStock()" class="btn-secondary">Add Stock</button>
+            </div>
+            <div id="selectedStocks" class="selected-stocks"></div>
+            <div class="form-actions">
+                <button type="submit" class="btn-primary">Save Portfolio</button>
+                <button type="button" onclick="cancelForm()" class="btn-secondary">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script src="{{ url_for('static', path='/js/portfolio-manager.js') }}"></script>
+{% endblock %} 

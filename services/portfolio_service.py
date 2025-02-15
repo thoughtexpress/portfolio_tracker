@@ -2,13 +2,20 @@ from decimal import Decimal
 from typing import Dict, List
 from datetime import datetime
 from uuid import uuid4
+from motor.motor_asyncio import AsyncIOMotorClient
 from models.portfolio import Portfolio, PortfolioCreate, PortfolioHolding
 from services.currency_service import CurrencyService
 from services.stock_master_service import StockMasterService
+from config.settings import MONGODB_URI
+
+async def get_database():
+    client = AsyncIOMotorClient(MONGODB_URI)
+    return client.portfolio_tracker
 
 class PortfolioService:
     def __init__(self):
-        self.db = get_database()
+        self.client = AsyncIOMotorClient(MONGODB_URI)
+        self.db = self.client.portfolio_tracker
         self.collection = self.db.portfolios
         self.currency_service = CurrencyService()
         self.stock_service = StockMasterService()
@@ -27,8 +34,17 @@ class PortfolioService:
         return Portfolio(**portfolio_dict)
 
     async def get_all_portfolios(self) -> List[Portfolio]:
-        portfolios = await self.collection.find().to_list(None)
-        return [Portfolio(**p) for p in portfolios]
+        """Get all portfolios"""
+        cursor = self.collection.find({})
+        portfolios = await cursor.to_list(length=None)
+        return [Portfolio(**portfolio) for portfolio in portfolios]
+
+    async def get_portfolio(self, portfolio_id: str) -> Portfolio:
+        """Get a specific portfolio"""
+        portfolio = await self.collection.find_one({"id": portfolio_id})
+        if portfolio:
+            return Portfolio(**portfolio)
+        return None
 
     async def get_portfolio_value(self, portfolio_id: str) -> Dict:
         """Get portfolio value with currency conversion"""
