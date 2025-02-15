@@ -1,68 +1,161 @@
 {% extends "base.html" %}
 
-{% block title %}Create Portfolio{% endblock %}
+{% block title %}Create New Portfolio{% endblock %}
 
 {% block content %}
-<div class="create-portfolio">
+<div class="create-portfolio-container">
     <h1>Create New Portfolio</h1>
+    
+    <!-- Portfolio Creation Form -->
     <form id="portfolioForm" class="portfolio-form">
-        <div class="form-group">
-            <label for="name">Portfolio Name</label>
-            <input type="text" id="name" name="name" required maxlength="100">
-        </div>
-        
-        <div class="form-group">
-            <label for="base_currency">Base Currency</label>
-            <select id="base_currency" name="base_currency">
-                <option value="INR">INR</option>
-                <option value="USD">USD</option>
-            </select>
-        </div>
-
-        <div class="form-group">
-            <label for="stock">Add Stock</label>
-            <select id="stock" name="stock">
-                {% for stock in master_stocks %}
-                <option value="{{ stock.symbol }}">
-                    {{ stock.display_name }} ({{ stock.exchange_code }})
-                </option>
-                {% endfor %}
-            </select>
-            <button type="button" onclick="addStock()" class="btn-secondary">Add</button>
+        <!-- Basic Details Section -->
+        <div class="form-section">
+            <h3>Portfolio Details</h3>
+            <div class="form-group">
+                <label for="name">Portfolio Name*</label>
+                <input type="text" id="name" required maxlength="100">
+            </div>
+            
+            <div class="form-group">
+                <label for="base_currency">Base Currency*</label>
+                <select id="base_currency" required>
+                    <option value="INR">INR</option>
+                    <option value="USD">USD</option>
+                </select>
+            </div>
         </div>
 
-        <div id="selectedStocks" class="selected-stocks">
-            <!-- Dynamically added stocks will appear here -->
+        <!-- Stock Selection Section -->
+        <div class="form-section">
+            <h3>Add Stocks</h3>
+            <div class="stock-selection">
+                <div class="form-group">
+                    <label for="stock">Select Stock*</label>
+                    <select id="stock" required>
+                        {% for stock in master_stocks %}
+                            <option value="{{ stock.id }}">{{ stock.symbol }} - {{ stock.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="quantity">Quantity*</label>
+                    <input type="number" id="quantity" min="0.01" step="0.01" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="purchase_price">Purchase Price*</label>
+                    <input type="number" id="purchase_price" min="0.01" step="0.01" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="purchase_date">Purchase Date*</label>
+                    <input type="date" id="purchase_date" required>
+                </div>
+                
+                <button type="button" onclick="addStock()" class="btn-secondary">Add Stock</button>
+            </div>
+
+            <!-- Selected Stocks List -->
+            <div id="selectedStocks" class="selected-stocks">
+                <h4>Selected Stocks</h4>
+                <div id="stocksList"></div>
+            </div>
         </div>
 
-        <button type="submit" class="btn-primary">Create Portfolio</button>
+        <div class="form-actions">
+            <button type="submit" class="btn-primary">Create Portfolio</button>
+            <button type="button" onclick="window.location.href='/portfolios'" class="btn-secondary">Cancel</button>
+        </div>
     </form>
 </div>
 
 <script>
+let selectedStocks = [];
+
+function addStock() {
+    const stock = document.getElementById('stock');
+    const quantity = document.getElementById('quantity');
+    const price = document.getElementById('purchase_price');
+    const date = document.getElementById('purchase_date');
+
+    if (!quantity.value || !price.value || !date.value) {
+        alert('Please fill all stock details');
+        return;
+    }
+
+    selectedStocks.push({
+        stock_id: stock.value,
+        stock_name: stock.options[stock.selectedIndex].text,
+        quantity: parseFloat(quantity.value),
+        purchase_price: parseFloat(price.value),
+        purchase_date: date.value
+    });
+
+    updateStocksList();
+    resetStockForm();
+}
+
+function updateStocksList() {
+    const stocksList = document.getElementById('stocksList');
+    stocksList.innerHTML = selectedStocks.map((stock, index) => `
+        <div class="stock-item">
+            <span>${stock.stock_name}</span>
+            <span>Quantity: ${stock.quantity}</span>
+            <span>Price: ${stock.purchase_price}</span>
+            <span>Date: ${stock.purchase_date}</span>
+            <button onclick="removeStock(${index})" class="btn-danger">Remove</button>
+        </div>
+    `).join('');
+}
+
+function removeStock(index) {
+    selectedStocks.splice(index, 1);
+    updateStocksList();
+}
+
+function resetStockForm() {
+    document.getElementById('quantity').value = '';
+    document.getElementById('purchase_price').value = '';
+    document.getElementById('purchase_date').value = '';
+}
+
 document.getElementById('portfolioForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const formData = new FormData(e.target);
-    const data = {
-        name: formData.get('name'),
-        base_currency: formData.get('base_currency'),
-        user_id: "{{ user_id }}"  // We'll need to implement authentication
+    
+    if (selectedStocks.length === 0) {
+        alert('Please add at least one stock to the portfolio');
+        return;
+    }
+
+    const portfolioData = {
+        name: document.getElementById('name').value,
+        base_currency: document.getElementById('base_currency').value,
+        holdings: selectedStocks.map(stock => ({
+            stock_id: stock.stock_id,
+            quantity: stock.quantity,
+            purchase_price: stock.purchase_price,
+            purchase_date: stock.purchase_date
+        }))
     };
 
     try {
-        const response = await fetch('/api/v1/portfolios/', {
+        const response = await fetch('/portfolios/', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify(data)
+            body: JSON.stringify(portfolioData)
         });
-        
+
         if (response.ok) {
-            window.location.href = '/';
+            window.location.href = '/portfolios';
+        } else {
+            alert('Error creating portfolio');
         }
     } catch (error) {
         console.error('Error:', error);
+        alert('Error creating portfolio');
     }
 });
 </script>
