@@ -4,7 +4,7 @@ from models.portfolio import (
     Portfolio, PortfolioCreate, PortfolioHolding
 )
 from services.portfolio_service import PortfolioService
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from services.stock_master_service import StockMasterService
 from datetime import datetime
@@ -193,4 +193,73 @@ async def delete_portfolio(
         raise HTTPException(
             status_code=500,
             detail=f"Error deleting portfolio: {str(e)}"
+        )
+
+@router.get("/api/stocks/search")
+async def search_stocks(
+    request: Request,
+    query: str,
+    stock_service: StockMasterService = Depends()
+):
+    try:
+        logging.info(f"Searching stocks with query: {query}")
+        stocks = await stock_service.search_stocks(query)
+        # Convert to list of dictionaries for JSON response
+        stocks_data = [{
+            "id": stock.id,
+            "symbol": stock.symbol,
+            "name": stock.name
+        } for stock in stocks]
+        return stocks_data
+    except Exception as e:
+        logging.error(f"Error in search_stocks: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/api/stocks/validate/{stock_id}")
+async def validate_stock(
+    stock_id: str,
+    stock_service: StockMasterService = Depends()
+):
+    stock = await stock_service.validate_stock(stock_id)
+    if not stock:
+        raise HTTPException(status_code=404, detail="Stock not found or inactive")
+    return stock
+
+@router.get("/api/stocks/verify")
+async def verify_stocks_database(
+    request: Request,
+    stock_service: StockMasterService = Depends()
+):
+    """Endpoint to verify database connection and stock data"""
+    try:
+        # Initialize service
+        await stock_service.initialize()
+        
+        # Verify database connection
+        is_connected = await stock_service.verify_database_connection()
+        
+        if not is_connected:
+            return JSONResponse(
+                content={
+                    "status": "error",
+                    "message": "Database connection failed"
+                },
+                status_code=500
+            )
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "message": "Database connection verified"
+            },
+            status_code=200
+        )
+    except Exception as e:
+        logging.error(f"Verification failed: {e}")
+        return JSONResponse(
+            content={
+                "status": "error",
+                "message": f"Connection error: {str(e)}"
+            },
+            status_code=500
         ) 

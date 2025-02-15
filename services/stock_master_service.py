@@ -5,7 +5,7 @@ from config.exchanges import EXCHANGE_CONFIGS, ExchangeConfig
 from config.settings import MONGODB_URI
 from models.stock import Stock
 from datetime import datetime
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from config.database import get_database
 from bson import ObjectId
 
@@ -15,28 +15,24 @@ def get_database():
 
 class StockMasterService:
     def __init__(self):
-        self.db = get_database()
-        self.collection = self.db.master_stocks
+        self.db = None
+        self.collection = None
+
+    async def initialize(self):
+        """Initialize database connection"""
+        if self.db is None:
+            self.db = await get_database()
+            self.collection = self.db.master_stocks
+            logging.info("StockMasterService initialized")
 
     async def get_all_stocks(self) -> List[Stock]:
         """Fetch all stocks from the master_stocks collection"""
         try:
-            stocks = []
-            # Use await to get all documents at once
-            cursor = await self.collection.find({}).to_list(length=None)
-            
-            for stock in cursor:
-                # Map the document structure to your Stock model
-                stocks.append(Stock(
-                    id=str(stock['_id']),
-                    symbol=stock['identifiers']['nse_code'],
-                    name=stock['display_name'],
-                    exchange_code="NSE",  # Since these are NSE stocks
-                    created_at=stock['created_at']
-                ))
-            return stocks
+            # Convert cursor to list directly
+            stocks_data = await self.collection.find({"status": "active"}).to_list(None)
+            return [self._map_to_stock_model(stock) for stock in stocks_data]
         except Exception as e:
-            print(f"Error fetching stocks: {e}")
+            logging.error(f"Error fetching stocks: {e}")
             return []
 
     async def get_stock(self, stock_id: str) -> Optional[Stock]:
@@ -44,13 +40,7 @@ class StockMasterService:
         try:
             stock = await self.collection.find_one({"_id": ObjectId(stock_id)})
             if stock:
-                return Stock(
-                    id=str(stock['_id']),
-                    symbol=stock['identifiers']['nse_code'],
-                    name=stock['display_name'],
-                    exchange_code="NSE",
-                    created_at=stock['created_at']
-                )
+                return self._map_to_stock_model(stock)
             return None
         except Exception as e:
             print(f"Error fetching stock {stock_id}: {e}")
@@ -103,26 +93,65 @@ class StockMasterService:
     async def search_stocks(self, query: str) -> List[Stock]:
         """Search stocks by symbol or display name"""
         try:
-            cursor = await self.collection.find({
+            # Ensure initialization
+            await self.initialize()
+            
+            search_query = {
+                "status": "active",
                 "$or": [
                     {"identifiers.nse_code": {"$regex": query, "$options": "i"}},
                     {"display_name": {"$regex": query, "$options": "i"}}
                 ]
-            }).to_list(length=None)
+            }
+            
+            cursor = self.collection.find(search_query)
+            stocks_data = await cursor.to_list(length=None)
             
             stocks = []
-            for stock in cursor:
-                stocks.append(Stock(
-                    id=str(stock['_id']),
-                    symbol=stock['identifiers']['nse_code'],
-                    name=stock['display_name'],
-                    exchange_code="NSE",
-                    created_at=stock['created_at']
-                ))
+            for doc in stocks_data:
+                try:
+                    stock = Stock(
+                        id=str(doc['_id']),
+                        symbol=doc['identifiers']['nse_code'],
+                        name=doc['display_name'],
+                        exchange_code="NSE",
+                        created_at=doc['created_at'],
+                        status=doc.get('status', 'active'),
+                        identifiers=doc['identifiers']
+                    )
+                    stocks.append(stock)
+                except Exception as e:
+                    logging.error(f"Error mapping stock document: {e}")
+                    continue
+            
             return stocks
         except Exception as e:
-            print(f"Error searching stocks: {e}")
+            logging.error(f"Error searching stocks: {e}")
             return []
+
+    def _map_to_stock_model(self, doc: dict) -> Stock:
+        """Map MongoDB document to Stock model"""
+        return Stock(
+            id=str(doc['_id']),
+            symbol=doc['identifiers']['nse_code'],
+            name=doc['display_name'],
+            exchange_code="NSE",
+            created_at=doc['created_at'],
+            status=doc['status'],
+            identifiers=doc['identifiers']
+        )
+
+    async def validate_stock(self, stock_id: str) -> Optional[Stock]:
+        """Validate if a stock exists and is active"""
+        try:
+            stock = await self.collection.find_one({
+                "_id": ObjectId(stock_id),
+                "status": "active"
+            })
+            return self._map_to_stock_model(stock) if stock else None
+        except Exception as e:
+            print(f"Error validating stock {stock_id}: {e}")
+            return None
 
     async def create_stock_entry(self, stock_data: Dict, exchange_code: str) -> bool:
         """Create stock entry with exchange-specific information"""
@@ -170,3 +199,25 @@ class StockMasterService:
         return await self.collection.find({
             f"identifiers.exchange_codes.{exchange}": {"$exists": True}
         }).to_list(None)
+
+    async def verify_database_connection(self) -> bool:
+        """Verify database connection and collection existence"""
+        try:
+            # Ensure initialization
+            await self.initialize()
+            
+            # Count documents in master_stocks
+            count = await self.collection.count_documents({})
+            logging.info(f"Total stocks in database: {count}")
+            
+            # Get a sample document
+            sample = await self.collection.find_one({})
+            if sample:
+                logging.info(f"Sample stock document structure: {list(sample.keys())}")
+            else:
+                logging.warning("No documents found in master_stocks collection")
+            
+            return True
+        except Exception as e:
+            logging.error(f"Database verification failed: {e}")
+            return False
