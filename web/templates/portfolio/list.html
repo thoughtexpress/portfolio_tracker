@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}Portfolios{% endblock %}
+
+{% block content %}
+<div class="portfolios">
+    <h1>Your Portfolios</h1>
+    <div class="portfolio-list">
+        {% for portfolio in portfolios %}
+        <div class="portfolio-card">
+            <h2>{{ portfolio.name }}</h2>
+            <p>Value: {{ portfolio.total_value }} {{ portfolio.base_currency }}</p>
+            <a href="/portfolios/{{ portfolio.id }}">View Details</a>
+        </div>
+        {% endfor %}
+    </div>
+    <button onclick="window.location.href='/portfolios/new'">Create New Portfolio</button>
+</div>
+{% endblock %} 

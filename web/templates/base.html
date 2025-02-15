@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{% block title %}{% endblock %} - Portfolio Tracker</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}">
+</head>
+<body>
+    <nav>
+        <a href="/">Home</a>
+        <a href="/portfolios">Portfolios</a>
+    </nav>
+    {% block content %}{% endblock %}
+    <script src="{{ url_for('static', path='/js/main.js') }}"></script>
+</body>
+</html> 

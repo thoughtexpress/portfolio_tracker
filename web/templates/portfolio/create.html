@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}Create Portfolio{% endblock %}
+
+{% block content %}
+<div class="create-portfolio">
+    <h1>Create New Portfolio</h1>
+    <form id="portfolioForm" class="portfolio-form">
+        <div class="form-group">
+            <label for="name">Portfolio Name</label>
+            <input type="text" id="name" name="name" required maxlength="100">
+        </div>
+        
+        <div class="form-group">
+            <label for="base_currency">Base Currency</label>
+            <select id="base_currency" name="base_currency">
+                <option value="INR">INR</option>
+                <option value="USD">USD</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="stock">Add Stock</label>
+            <select id="stock" name="stock">
+                {% for stock in master_stocks %}
+                <option value="{{ stock.symbol }}">
+                    {{ stock.display_name }} ({{ stock.exchange_code }})
+                </option>
+                {% endfor %}
+            </select>
+            <button type="button" onclick="addStock()" class="btn-secondary">Add</button>
+        </div>
+
+        <div id="selectedStocks" class="selected-stocks">
+            <!-- Dynamically added stocks will appear here -->
+        </div>
+
+        <button type="submit" class="btn-primary">Create Portfolio</button>
+    </form>
+</div>
+
+<script>
+document.getElementById('portfolioForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const data = {
+        name: formData.get('name'),
+        base_currency: formData.get('base_currency'),
+        user_id: "{{ user_id }}"  // We'll need to implement authentication
+    };
+
+    try {
+        const response = await fetch('/api/v1/portfolios/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(data)
+        });
+        
+        if (response.ok) {
+            window.location.href = '/';
+        }
+    } catch (error) {
+        console.error('Error:', error);
+    }
+});
+</script>
+{% endblock %} 

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Portfolio Dashboard{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <div class="header">
+        <h1>Portfolio Dashboard</h1>
+        <button onclick="window.location.href='/portfolios/new'" class="btn-primary">Create Portfolio</button>
+    </div>
+    
+    {% if portfolios %}
+        <div class="portfolio-grid">
+            {% for portfolio in portfolios %}
+            <div class="portfolio-card">
+                <div class="card-header">
+                    <h2>{{ portfolio.name }}</h2>
+                    <span class="currency">{{ portfolio.base_currency }}</span>
+                </div>
+                <div class="card-body">
+                    <div class="value-info">
+                        <p>Total Value: {{ portfolio.total_value }}</p>
+                        <p>Cash Balance: {{ portfolio.cash_balance }}</p>
+                    </div>
+                    <div class="holdings-count">
+                        Holdings: {{ portfolio.holdings|length }}
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <a href="/portfolios/{{ portfolio.id }}" class="btn-secondary">View Details</a>
+                    <a href="/portfolios/{{ portfolio.id }}/transactions" class="btn-secondary">Transactions</a>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <div class="empty-message">
+                <h2>No Portfolios Yet</h2>
+                <p>Start tracking your investments by creating your first portfolio!</p>
+                <button onclick="window.location.href='/portfolios/new'" class="btn-primary">Create Your First Portfolio</button>
+            </div>
+        </div>
+    {% endif %}
+</div>
+{% endblock %} 
