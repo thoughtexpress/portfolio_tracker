@@ -10,6 +10,7 @@ from services.stock_master_service import StockMasterService
 from datetime import datetime
 from decimal import Decimal
 import logging
+from config.database import get_database
 
 router = APIRouter()
 templates = Jinja2Templates(directory="web/templates")
@@ -137,22 +138,16 @@ async def add_holding(
             detail=f"Error adding holding: {str(e)}"
         )
 
-@router.get("/new", response_class=HTMLResponse)
-async def show_create_form(
-    request: Request,
-    stock_service: StockMasterService = Depends()
-):
+@router.get("/portfolios/new", response_class=HTMLResponse)
+async def create_portfolio(request: Request):
+    """Render the portfolio creation page"""
     try:
-        master_stocks = await stock_service.get_all_stocks()
         return templates.TemplateResponse(
             "portfolio/create.html",
-            {
-                "request": request,
-                "master_stocks": master_stocks
-            }
+            {"request": request}
         )
     except Exception as e:
-        logging.error(f"Error rendering template: {e}")
+        logging.error(f"Error rendering portfolio creation page: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.put("/{portfolio_id}", response_model=Portfolio)
@@ -196,24 +191,27 @@ async def delete_portfolio(
         )
 
 @router.get("/api/stocks/search")
-async def search_stocks(
+def search_stocks(
     request: Request,
     query: str,
     stock_service: StockMasterService = Depends()
 ):
     try:
-        logging.info(f"Searching stocks with query: {query}")
-        stocks = await stock_service.search_stocks(query)
-        # Convert to list of dictionaries for JSON response
-        stocks_data = [{
-            "id": stock.id,
-            "symbol": stock.symbol,
-            "name": stock.name
-        } for stock in stocks]
-        return stocks_data
+        stocks = stock_service.search_stocks(query)
+        return JSONResponse(content=[
+            {
+                "id": stock.id,
+                "symbol": stock.symbol,
+                "name": stock.name,
+                "exchange_code": stock.exchange_code
+            } for stock in stocks
+        ])
     except Exception as e:
-        logging.error(f"Error in search_stocks: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Search error: {str(e)}")
+        return JSONResponse(
+            content={"error": str(e)},
+            status_code=500
+        )
 
 @router.get("/api/stocks/validate/{stock_id}")
 async def validate_stock(
@@ -230,19 +228,17 @@ async def verify_stocks_database(
     request: Request,
     stock_service: StockMasterService = Depends()
 ):
-    """Endpoint to verify database connection and stock data"""
+    """Verify database connection"""
     try:
-        # Initialize service
-        await stock_service.initialize()
-        
-        # Verify database connection
-        is_connected = await stock_service.verify_database_connection()
+        is_connected = await stock_service.verify_connection()
         
         if not is_connected:
+            logging.error("Database connection verification failed")
             return JSONResponse(
                 content={
                     "status": "error",
-                    "message": "Database connection failed"
+                    "message": "Database connection failed",
+                    "details": "Could not verify connection to MongoDB"
                 },
                 status_code=500
             )
@@ -255,11 +251,69 @@ async def verify_stocks_database(
             status_code=200
         )
     except Exception as e:
-        logging.error(f"Verification failed: {e}")
+        logging.error(f"Verification error: {str(e)}")
         return JSONResponse(
             content={
                 "status": "error",
-                "message": f"Connection error: {str(e)}"
+                "message": "Database connection failed",
+                "details": str(e)
             },
             status_code=500
-        ) 
+        )
+
+@router.get("/api/stocks/test-connection")
+async def test_database_connection(
+    request: Request,
+    stock_service: StockMasterService = Depends()
+):
+    """Test database connection and log details"""
+    try:
+        is_connected = await stock_service.verify_connection()
+        if is_connected:
+            return JSONResponse(
+                content={
+                    "status": "success",
+                    "message": "Database connection successful. Check logs for details."
+                },
+                status_code=200
+            )
+        else:
+            return JSONResponse(
+                content={
+                    "status": "error",
+                    "message": "Database connection failed. Check logs for details."
+                },
+                status_code=500
+            )
+    except Exception as e:
+        logging.error(f"Connection test failed: {str(e)}")
+        return JSONResponse(
+            content={
+                "status": "error",
+                "message": f"Test failed: {str(e)}"
+            },
+            status_code=500
+        )
+
+@router.get("/api/test-db")
+async def test_db():
+    """Simple endpoint to test database connection"""
+    try:
+        db = get_database()
+        collection = db.master_stocks
+        count = await collection.count_documents({})
+        sample = await collection.find_one({})
+        
+        return {
+            "status": "success",
+            "count": count,
+            "sample_id": str(sample['_id']) if sample else None,
+            "sample_name": sample['display_name'] if sample else None
+        }
+    except Exception as e:
+        logging.error(f"Database test failed: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "type": str(type(e))
+        } 

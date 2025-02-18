@@ -1,41 +1,63 @@
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import MongoClient
 import logging
-from typing import Optional
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # MongoDB connection settings
 MONGODB_URL = "mongodb://localhost:27017"
 DATABASE_NAME = "portfolio_tracker"
 
-# Global variable for database instance
+# Global database instance
 _db = None
 
-async def get_database():
-    """
-    Creates a database connection using motor
-    Returns the database instance
-    """
+def get_database():
+    """Get database instance with lazy initialization"""
     global _db
-    try:
-        if _db is None:
-            # Create client
-            logging.info(f"Connecting to MongoDB at {MONGODB_URL}")
-            client = AsyncIOMotorClient(MONGODB_URL)
-            
-            # Get database
+    if _db is None:
+        try:
+            # Create client and connect
+            logger.info(f"Connecting to MongoDB at {MONGODB_URL}")
+            client = MongoClient(MONGODB_URL)
             _db = client[DATABASE_NAME]
             
-            # Verify connection
-            await client.admin.command('ping')
-            logging.info("Successfully connected to MongoDB")
+            # Verify connection immediately
+            client.admin.command('ping')
+            count = _db.master_stocks.count_documents({})
+            logger.info(f"Connected successfully. Found {count} documents in master_stocks")
             
-            # List collections for verification
-            collections = await _db.list_collection_names()
-            logging.info(f"Available collections: {collections}")
-            
-        return _db
+        except Exception as e:
+            logger.error(f"MongoDB connection failed: {e}")
+            raise
+    
+    return _db
+
+def test_connection():
+    """Test database connection"""
+    try:
+        db = get_database()
+        count = db.master_stocks.count_documents({})
+        logger.info(f"Connection test successful. Found {count} documents")
+        return True
     except Exception as e:
-        logging.error(f"Failed to connect to MongoDB: {e}")
-        raise
+        logger.error(f"Connection test failed: {e}")
+        return False
+
+# # Test connection on startup
+# async def verify_startup():
+#     """Verify database connection on startup"""
+#     try:
+#         result = await test_connection()
+#         if result:
+#             logger.info("Database connection verified on startup")
+#         else:
+#             logger.error("Failed to verify database connection on startup")
+#     except Exception as e:
+#         logger.error(f"Startup verification failed: {e}")
+
+# # Run startup verification
+# asyncio.create_task(verify_startup())
 
 # Create a sync version for non-async contexts
 def get_sync_database():
@@ -43,7 +65,6 @@ def get_sync_database():
     Creates a synchronous database connection
     Returns the database instance
     """
-    from pymongo import MongoClient
     try:
         client = MongoClient(MONGODB_URL)
         db_name = DATABASE_NAME

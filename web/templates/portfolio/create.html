@@ -1,226 +1,233 @@
-{% extends "base.html" %}
-
-{% block title %}Create New Portfolio{% endblock %}
-
-{% block content %}
-<div class="create-portfolio-container">
-    <h1>Create New Portfolio</h1>
-    
-    <!-- Portfolio Creation Form -->
-    <form id="portfolioForm" class="portfolio-form">
-        <!-- Basic Portfolio Details -->
-        <div class="form-section">
-            <h3>Portfolio Details</h3>
-            <div class="form-group">
-                <label for="portfolioName">Portfolio Name*</label>
-                <input type="text" id="portfolioName" required maxlength="100">
-            </div>
-
-            <div class="form-group">
-                <label for="baseCurrency">Base Currency*</label>
-                <select id="baseCurrency" required>
-                    <option value="INR">INR</option>
-                    <option value="USD">USD</option>
-                </select>
-            </div>
-        </div>
-
-        <!-- Stock Search Section -->
-        <div class="form-section">
-            <h3>Add Holdings</h3>
-            <div class="stock-search-wrapper">
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create Portfolio</title>
+    <!-- Use url_for to generate correct static file URLs -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="create-portfolio-container">
+        <h1>Create New Portfolio</h1>
+        
+        <!-- Portfolio Creation Form -->
+        <form id="portfolioForm" class="portfolio-form">
+            <!-- Basic Portfolio Details -->
+            <div class="form-section">
+                <h3>Portfolio Details</h3>
                 <div class="form-group">
-                    <label for="stockSearch">Search Stock*</label>
-                    <div class="stock-search-container">
-                        <input type="text" 
-                               id="stockSearch" 
-                               placeholder="Type to search stocks..."
-                               autocomplete="off"
-                               class="stock-search-input">
-                        <div id="stockSearchResults" class="search-results"></div>
+                    <label for="portfolioName">Portfolio Name*</label>
+                    <input type="text" id="portfolioName" required maxlength="100">
+                </div>
+
+                <div class="form-group">
+                    <label for="baseCurrency">Base Currency*</label>
+                    <select id="baseCurrency" required>
+                        <option value="INR">INR</option>
+                        <option value="USD">USD</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Stock Search Section -->
+            <div class="form-section">
+                <h3>Add Holdings</h3>
+                <div class="stock-search-wrapper">
+                    <div class="form-group">
+                        <label for="stockSearch">Search Stock*</label>
+                        <div class="stock-search-container">
+                            <input type="text" 
+                                   id="stockSearch" 
+                                   placeholder="Type to search stocks..."
+                                   autocomplete="off"
+                                   class="stock-search-input">
+                            <div id="stockSearchResults" class="search-results"></div>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- Holdings List -->
-        <div id="holdingsList" class="holdings-list">
-            <h4>Portfolio Holdings</h4>
-            <div class="holdings-table">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Stock</th>
-                            <th>Quantity</th>
-                            <th>Price</th>
-                            <th>Date</th>
-                            <th>Total Value</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="holdingsTableBody"></tbody>
-                </table>
-            </div>
-        </div>
-
-        <div class="form-actions">
-            <button type="submit" class="btn-primary">Create Portfolio</button>
-            <button type="button" onclick="window.location.href='/portfolios'" class="btn-secondary">Cancel</button>
-        </div>
-    </form>
-</div>
-
-<style>
-.stock-search-container {
-    position: relative;
-    width: 100%;
-}
-
-.stock-search-input {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 14px;
-}
-
-.search-results {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: white;
-    border: 1px solid #ddd;
-    border-radius: 0 0 4px 4px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    max-height: 200px;
-    overflow-y: auto;
-    z-index: 1000;
-    display: none;
-}
-
-.search-result-item {
-    padding: 8px 12px;
-    cursor: pointer;
-    border-bottom: 1px solid #eee;
-}
-
-.search-result-item:hover {
-    background-color: #f5f5f5;
-}
-
-.search-result-item .stock-symbol {
-    font-weight: bold;
-    color: #2c3e50;
-}
-
-.search-result-item .stock-name {
-    color: #666;
-    font-size: 0.9em;
-}
-
-.holdings-table {
-    margin-top: 1rem;
-    overflow-x: auto;
-}
-
-.holdings-table table {
-    width: 100%;
-    border-collapse: collapse;
-}
-
-.holdings-table th,
-.holdings-table td {
-    padding: 0.75rem;
-    text-align: left;
-    border-bottom: 1px solid #dee2e6;
-}
-</style>
-
-<script>
-let selectedStock = null;
-let holdings = [];
-
-// Debounce function to limit API calls
-function debounce(func, wait) {
-    let timeout;
-    return function(...args) {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => func.apply(this, args), wait);
-    };
-}
-
-// Stock search functionality
-const searchStocks = debounce(async (query) => {
-    const searchInput = document.getElementById('stockSearch');
-    const resultsDiv = document.getElementById('stockSearchResults');
-    
-    if (query.length < 2) {
-        resultsDiv.style.display = 'none';
-        return;
-    }
-
-    try {
-        console.log('Searching for:', query); // Debug log
-        const response = await fetch(`/portfolios/api/stocks/search?query=${encodeURIComponent(query)}`);
-        
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const stocks = await response.json();
-        console.log('Search results:', stocks); // Debug log
-
-        if (stocks.length > 0) {
-            resultsDiv.innerHTML = stocks.map(stock => `
-                <div class="search-result-item" onclick="selectStock('${stock.id}', '${stock.symbol}', '${stock.name}')">
-                    <span class="stock-symbol">${stock.symbol}</span>
-                    <span class="stock-name">${stock.name}</span>
+            <!-- Holdings List -->
+            <div id="holdingsList" class="holdings-list">
+                <h4>Portfolio Holdings</h4>
+                <div class="holdings-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Stock</th>
+                                <th>Quantity</th>
+                                <th>Price</th>
+                                <th>Date</th>
+                                <th>Total Value</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="holdingsTableBody"></tbody>
+                    </table>
                 </div>
-            `).join('');
-            resultsDiv.style.display = 'block';
-        } else {
-            resultsDiv.innerHTML = '<div class="search-result-item">No stocks found</div>';
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="btn-primary">Create Portfolio</button>
+                <button type="button" onclick="window.location.href='/portfolios'" class="btn-secondary">Cancel</button>
+            </div>
+        </form>
+    </div>
+
+    <style>
+    .stock-search-container {
+        position: relative;
+        width: 100%;
+    }
+
+    .stock-search-input {
+        width: 100%;
+        padding: 8px 12px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 14px;
+    }
+
+    .search-results {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        background: white;
+        border: 1px solid #ddd;
+        border-radius: 0 0 4px 4px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        max-height: 200px;
+        overflow-y: auto;
+        z-index: 1000;
+        display: none;
+    }
+
+    .search-result-item {
+        padding: 8px 12px;
+        cursor: pointer;
+        border-bottom: 1px solid #eee;
+    }
+
+    .search-result-item:hover {
+        background-color: #f5f5f5;
+    }
+
+    .search-result-item .stock-symbol {
+        font-weight: bold;
+        color: #2c3e50;
+    }
+
+    .search-result-item .stock-name {
+        color: #666;
+        font-size: 0.9em;
+    }
+
+    .holdings-table {
+        margin-top: 1rem;
+        overflow-x: auto;
+    }
+
+    .holdings-table table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .holdings-table th,
+    .holdings-table td {
+        padding: 0.75rem;
+        text-align: left;
+        border-bottom: 1px solid #dee2e6;
+    }
+    </style>
+
+    <script>
+    let selectedStock = null;
+    let holdings = [];
+
+    // Debounce function to limit API calls
+    function debounce(func, wait) {
+        let timeout;
+        return function(...args) {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => func.apply(this, args), wait);
+        };
+    }
+
+    // Stock search functionality
+    const searchStocks = debounce(async (query) => {
+        const searchInput = document.getElementById('stockSearch');
+        const resultsDiv = document.getElementById('stockSearchResults');
+        
+        if (query.length < 2) {
+            resultsDiv.style.display = 'none';
+            return;
+        }
+
+        try {
+            console.log('Searching for:', query); // Debug log
+            const response = await fetch(`/portfolios/api/stocks/search?query=${encodeURIComponent(query)}`);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const stocks = await response.json();
+            console.log('Search results:', stocks); // Debug log
+
+            if (stocks.length > 0) {
+                resultsDiv.innerHTML = stocks.map(stock => `
+                    <div class="search-result-item" onclick="selectStock('${stock.id}', '${stock.symbol}', '${stock.name}')">
+                        <span class="stock-symbol">${stock.symbol}</span>
+                        <span class="stock-name">${stock.name}</span>
+                    </div>
+                `).join('');
+                resultsDiv.style.display = 'block';
+            } else {
+                resultsDiv.innerHTML = '<div class="search-result-item">No stocks found</div>';
+                resultsDiv.style.display = 'block';
+            }
+        } catch (error) {
+            console.error('Error searching stocks:', error);
+            resultsDiv.innerHTML = '<div class="search-result-item">Error searching stocks</div>';
             resultsDiv.style.display = 'block';
         }
-    } catch (error) {
-        console.error('Error searching stocks:', error);
-        resultsDiv.innerHTML = '<div class="search-result-item">Error searching stocks</div>';
-        resultsDiv.style.display = 'block';
-    }
-}, 300);
+    }, 300);
 
-// Add event listener for stock search input
-document.getElementById('stockSearch').addEventListener('input', (e) => {
-    searchStocks(e.target.value);
-});
+    // Add event listener for stock search input
+    document.getElementById('stockSearch').addEventListener('input', (e) => {
+        searchStocks(e.target.value);
+    });
 
-// Hide search results when clicking outside
-document.addEventListener('click', (e) => {
-    const searchContainer = document.querySelector('.stock-search-container');
-    const resultsDiv = document.getElementById('stockSearchResults');
-    
-    if (!searchContainer.contains(e.target)) {
+    // Hide search results when clicking outside
+    document.addEventListener('click', (e) => {
+        const searchContainer = document.querySelector('.stock-search-container');
+        const resultsDiv = document.getElementById('stockSearchResults');
+        
+        if (!searchContainer.contains(e.target)) {
+            resultsDiv.style.display = 'none';
+        }
+    });
+
+    function selectStock(id, symbol, name) {
+        const searchInput = document.getElementById('stockSearch');
+        const resultsDiv = document.getElementById('stockSearchResults');
+        
+        searchInput.value = `${symbol} - ${name}`;
         resultsDiv.style.display = 'none';
+        
+        selectedStock = { id, symbol, name };
+        console.log('Selected stock:', selectedStock); // Debug log
     }
-});
 
-function selectStock(id, symbol, name) {
-    const searchInput = document.getElementById('stockSearch');
-    const resultsDiv = document.getElementById('stockSearchResults');
-    
-    searchInput.value = `${symbol} - ${name}`;
-    resultsDiv.style.display = 'none';
-    
-    selectedStock = { id, symbol, name };
-    console.log('Selected stock:', selectedStock); // Debug log
-}
+    // Initialize the search input
+    document.addEventListener('DOMContentLoaded', () => {
+        const searchInput = document.getElementById('stockSearch');
+        searchInput.value = '';
+        selectedStock = null;
+    });
+    </script>
 
-// Initialize the search input
-document.addEventListener('DOMContentLoaded', () => {
-    const searchInput = document.getElementById('stockSearch');
-    searchInput.value = '';
-    selectedStock = null;
-});
-</script>
-{% endblock %} 
+    <!-- JavaScript files at the end -->
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html> 
