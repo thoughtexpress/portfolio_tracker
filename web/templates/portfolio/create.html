@@ -3,14 +3,60 @@
 <head>
     <title>Create Portfolio</title>
     <!-- Use url_for to generate correct static file URLs -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .search-result-item {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .stock-info {
+            flex-grow: 1;
+        }
+        .stock-symbol {
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .add-stock-btn {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .add-stock-btn:hover {
+            background-color: #45a049;
+        }
+        #selectedStocks {
+            margin-top: 20px;
+            border-top: 2px solid #eee;
+            padding-top: 10px;
+        }
+        .stock-details {
+            margin-top: 10px;
+            padding: 10px;
+            background: #f5f6fa;
+            border-radius: 4px;
+        }
+        .stock-details input {
+            margin: 5px;
+            padding: 5px;
+        }
+        .validation-error {
+            color: red;
+            font-size: 0.8em;
+        }
+    </style>
 </head>
 <body>
     <div class="create-portfolio-container">
         <h1>Create New Portfolio</h1>
         
         <!-- Portfolio Creation Form -->
-        <form id="portfolioForm" class="portfolio-form">
+        <form id="portfolioForm" onsubmit="return false;">
             <!-- Basic Portfolio Details -->
             <div class="form-section">
                 <h3>Portfolio Details</h3>
@@ -46,28 +92,14 @@
                 </div>
             </div>
 
-            <!-- Holdings List -->
-            <div id="holdingsList" class="holdings-list">
-                <h4>Portfolio Holdings</h4>
-                <div class="holdings-table">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Stock</th>
-                                <th>Quantity</th>
-                                <th>Price</th>
-                                <th>Date</th>
-                                <th>Total Value</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="holdingsTableBody"></tbody>
-                    </table>
-                </div>
+            <!-- Selected Stocks Section -->
+            <div id="selectedStocks">
+                <h2>Selected Stocks</h2>
+                <div id="selectedStocksList"></div>
             </div>
 
             <div class="form-actions">
-                <button type="submit" class="btn-primary">Create Portfolio</button>
+                <button type="button" onclick="savePortfolio()" class="btn-primary">Create Portfolio</button>
                 <button type="button" onclick="window.location.href='/portfolios'" class="btn-secondary">Cancel</button>
             </div>
         </form>
@@ -141,19 +173,97 @@
     </style>
 
     <script>
-    let selectedStock = null;
-    let holdings = [];
+    // Store selected stocks
+    let selectedStocks = new Map(); // Changed to Map to store stock details
 
     // Debounce function to limit API calls
     function debounce(func, wait) {
         let timeout;
-        return function(...args) {
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
             clearTimeout(timeout);
-            timeout = setTimeout(() => func.apply(this, args), wait);
+            timeout = setTimeout(later, wait);
         };
     }
 
-    // Stock search functionality
+    // Function to add stock to selection
+    function addStock(stockId, symbol, name) {
+        if (selectedStocks.has(stockId)) {
+            alert('This stock is already in your selection');
+            return;
+        }
+
+        const stockData = {
+            id: stockId,
+            symbol: symbol,
+            name: name,
+            quantity: '',
+            purchase_price: '',
+            purchase_date: ''
+        };
+
+        selectedStocks.set(stockId, stockData);
+        
+        // Add to selected stocks display
+        const stockElement = document.createElement('div');
+        stockElement.className = 'stock-item';
+        stockElement.dataset.stockId = stockId;
+        stockElement.innerHTML = `
+            <div class="stock-info">
+                <span class="stock-symbol">${symbol}</span>
+                <span class="stock-name">${name}</span>
+            </div>
+            <div class="stock-details">
+                <div>
+                    <input type="number" 
+                           placeholder="Quantity" 
+                           step="0.01"
+                           onchange="updateStockDetails('${stockId}', 'quantity', this.value)"
+                           required>
+                </div>
+                <div>
+                    <input type="number" 
+                           placeholder="Purchase Price" 
+                           step="0.01"
+                           onchange="updateStockDetails('${stockId}', 'purchase_price', this.value)"
+                           required>
+                </div>
+                <div>
+                    <input type="date" 
+                           onchange="updateStockDetails('${stockId}', 'purchase_date', this.value)"
+                           required>
+                </div>
+            </div>
+            <button onclick="removeStock('${stockId}')" class="btn-danger">Remove</button>
+        `;
+        
+        document.getElementById('selectedStocksList').appendChild(stockElement);
+    }
+
+    // Function to update stock details
+    function updateStockDetails(stockId, field, value) {
+        const stockData = selectedStocks.get(stockId);
+        if (stockData) {
+            stockData[field] = value;
+            selectedStocks.set(stockId, stockData);
+        }
+    }
+
+    // Function to remove stock from selection
+    function removeStock(stockId) {
+        selectedStocks.delete(stockId);
+        
+        // Remove from selected stocks list
+        const stockElement = document.querySelector(`.stock-item[data-stock-id="${stockId}"]`);
+        if (stockElement) {
+            stockElement.remove();
+        }
+    }
+
+    // Search stocks function
     const searchStocks = debounce(async (query) => {
         const searchInput = document.getElementById('stockSearch');
         const resultsDiv = document.getElementById('stockSearchResults');
@@ -164,23 +274,32 @@
         }
 
         try {
-            console.log('Searching for:', query); // Debug log
             const response = await fetch(`/portfolios/api/stocks/search?query=${encodeURIComponent(query)}`);
             
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                throw new Error('Search failed');
             }
-            
-            const stocks = await response.json();
-            console.log('Search results:', stocks); // Debug log
 
+            const stocks = await response.json();
+            
             if (stocks.length > 0) {
-                resultsDiv.innerHTML = stocks.map(stock => `
-                    <div class="search-result-item" onclick="selectStock('${stock.id}', '${stock.symbol}', '${stock.name}')">
-                        <span class="stock-symbol">${stock.symbol}</span>
-                        <span class="stock-name">${stock.name}</span>
-                    </div>
-                `).join('');
+                resultsDiv.innerHTML = stocks.map(stock => {
+                    const isSelected = selectedStocks.has(stock.id);
+                    return `
+                        <div class="search-result-item" data-stock-id="${stock.id}">
+                            <div class="stock-info">
+                                <span class="stock-symbol">${stock.symbol}</span>
+                                <span class="stock-name">${stock.name}</span>
+                            </div>
+                            <button onclick="addStock('${stock.id}', '${stock.symbol}', '${stock.name}')" 
+                                    class="add-stock-btn"
+                                    ${isSelected ? 'disabled' : ''}
+                                    style="background-color: ${isSelected ? '#cccccc' : '#4CAF50'}">
+                                ${isSelected ? 'Added' : 'Add'}
+                            </button>
+                        </div>
+                    `;
+                }).join('');
                 resultsDiv.style.display = 'block';
             } else {
                 resultsDiv.innerHTML = '<div class="search-result-item">No stocks found</div>';
@@ -193,14 +312,14 @@
         }
     }, 300);
 
-    // Add event listener for stock search input
+    // Add event listener to search input
     document.getElementById('stockSearch').addEventListener('input', (e) => {
         searchStocks(e.target.value);
     });
 
-    // Hide search results when clicking outside
+    // Close search results when clicking outside
     document.addEventListener('click', (e) => {
-        const searchContainer = document.querySelector('.stock-search-container');
+        const searchContainer = document.querySelector('.search-section');
         const resultsDiv = document.getElementById('stockSearchResults');
         
         if (!searchContainer.contains(e.target)) {
@@ -208,23 +327,66 @@
         }
     });
 
-    function selectStock(id, symbol, name) {
-        const searchInput = document.getElementById('stockSearch');
+    // Initialize the page
+    document.addEventListener('DOMContentLoaded', () => {
+        // Clear search input
+        document.getElementById('stockSearch').value = '';
+        
+        // Clear search results
         const resultsDiv = document.getElementById('stockSearchResults');
-        
-        searchInput.value = `${symbol} - ${name}`;
         resultsDiv.style.display = 'none';
+    });
+
+    // Save portfolio function
+    function validatePortfolio() {
+        const name = document.getElementById('portfolioName').value;
+        const baseCurrency = document.getElementById('baseCurrency').value;
         
-        selectedStock = { id, symbol, name };
-        console.log('Selected stock:', selectedStock); // Debug log
+        if (!name || name.length > 100) {
+            alert('Portfolio name is required and must be less than 100 characters');
+            return false;
+        }
+
+        if (!baseCurrency || !['USD', 'INR'].includes(baseCurrency)) {
+            alert('Please select a valid base currency');
+            return false;
+        }
+
+        if (selectedStocks.size === 0) {
+            alert('Please add at least one stock to the portfolio');
+            return false;
+        }
+
+        // Validate each stock's details
+        for (const [_, stock] of selectedStocks) {
+            if (!stock.quantity || !stock.purchase_price || !stock.purchase_date) {
+                alert('Please fill in all details for each selected stock');
+                return false;
+            }
+        }
+
+        return true;
     }
 
-    // Initialize the search input
-    document.addEventListener('DOMContentLoaded', () => {
-        const searchInput = document.getElementById('stockSearch');
-        searchInput.value = '';
-        selectedStock = null;
-    });
+    async function savePortfolio() {
+        if (!validatePortfolio()) return;
+
+        const holdings = Array.from(selectedStocks.values()).map(stock => ({
+            stock_id: stock.id,
+            quantity: parseFloat(stock.quantity),
+            purchase_price: parseFloat(stock.purchase_price),
+            purchase_date: new Date(stock.purchase_date)
+        }));
+
+        const portfolioData = {
+            name: document.getElementById('portfolioName').value,
+            base_currency: document.getElementById('baseCurrency').value,
+            holdings: holdings
+        };
+
+        console.log('Portfolio data to save:', portfolioData);
+        // TODO: Add API call to save portfolio
+    }
     </script>
 
     <!-- JavaScript files at the end -->

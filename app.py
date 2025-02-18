@@ -64,12 +64,26 @@ def search_stocks():
         stocks = list(stocks_collection.find(search_query))
         logger.info(f"Found {len(stocks)} matching stocks")
         
-        results = [{
-            "id": str(stock['_id']),
-            "symbol": stock['identifiers']['nse_code'],
-            "name": stock['display_name'],
-            "exchange_code": "NSE"
-        } for stock in stocks]
+        # Log first document structure for debugging
+        if stocks:
+            logger.info(f"Sample document structure: {stocks[0]}")
+        
+        results = []
+        for stock in stocks:
+            try:
+                # Safely access nested fields with get()
+                identifiers = stock.get('identifiers', {})
+                result = {
+                    "id": str(stock['_id']),
+                    "symbol": identifiers.get('nse_code', ''),  # Use get() with default value
+                    "name": stock.get('display_name', ''),
+                    "exchange_code": "NSE"
+                }
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Error processing stock document: {e}")
+                logger.error(f"Problematic document: {stock}")
+                continue
 
         return jsonify(results)
 
