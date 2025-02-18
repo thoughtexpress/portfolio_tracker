@@ -189,6 +189,53 @@ def create_portfolio():
         logger.error(traceback.format_exc())
         return jsonify({'error': 'Internal server error'}), 500
 
+@app.route('/portfolios')
+def list_portfolios():
+    """Display list of portfolios"""
+    try:
+        logger.info("Fetching portfolios list")
+        
+        # Fetch all portfolios from the database
+        portfolios = list(portfolios_collection.find())
+        logger.info(f"Found {len(portfolios)} portfolios")
+
+        # Create a set of all stock IDs
+        stock_ids = set()
+        for portfolio in portfolios:
+            for holding in portfolio.get('holdings', []):
+                stock_ids.add(holding['stock_id'])
+
+        # Fetch all required stocks in one query
+        stocks = {
+            str(stock['_id']): {
+                'symbol': stock.get('identifiers', {}).get('nse_code', ''),
+                'name': stock.get('display_name', '')
+            }
+            for stock in stocks_collection.find({'_id': {'$in': list(map(ObjectId, stock_ids))}})
+        }
+
+        # Convert ObjectId to string and add stock details
+        for portfolio in portfolios:
+            portfolio['_id'] = str(portfolio['_id'])
+            for holding in portfolio.get('holdings', []):
+                if 'quantity' in holding:
+                    holding['quantity'] = float(holding['quantity'].to_decimal())
+                if 'purchase_price' in holding:
+                    holding['purchase_price'] = float(holding['purchase_price'].to_decimal())
+                # Add stock details to holding
+                stock_info = stocks.get(holding['stock_id'], {})
+                holding['stock_symbol'] = stock_info.get('symbol', 'Unknown')
+                holding['stock_name'] = stock_info.get('name', 'Unknown Stock')
+
+        return render_template(
+            'portfolio/list.html',
+            portfolios=portfolios
+        )
+    except Exception as e:
+        logger.error(f"Error fetching portfolios: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Failed to fetch portfolios'}), 500
+
 if __name__ == '__main__':
     logger.info(f"Starting Flask application...")
     logger.info(f"Template folder: {app.template_folder}")

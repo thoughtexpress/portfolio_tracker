@@ -1,19 +1,90 @@
-{% extends "base.html" %}
-
-{% block title %}Portfolios{% endblock %}
-
-{% block content %}
-<div class="portfolios">
-    <h1>Your Portfolios</h1>
-    <div class="portfolio-list">
-        {% for portfolio in portfolios %}
-        <div class="portfolio-card">
-            <h2>{{ portfolio.name }}</h2>
-            <p>Value: {{ portfolio.total_value }} {{ portfolio.base_currency }}</p>
-            <a href="/portfolios/{{ portfolio.id }}">View Details</a>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Portfolios</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .holdings-summary ul {
+            list-style: none;
+            padding: 0;
+        }
+        .holdings-summary li {
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .label {
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .stock-name {
+            color: #2c3e50;
+            font-size: 1.1em;
+            margin-bottom: 5px;
+        }
+        .portfolio-card {
+            padding: 20px;
+        }
+        .portfolio-info {
+            margin-bottom: 15px;
+        }
+        .portfolio-info p {
+            margin: 5px 0;
+        }
+        .stock-header {
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <div class="header">
+            <h1>Your Portfolios</h1>
+            <a href="{{ url_for('new_portfolio') }}" class="btn-primary">Create New Portfolio</a>
         </div>
-        {% endfor %}
+
+        {% if portfolios %}
+        <div class="portfolio-grid">
+            {% for portfolio in portfolios %}
+            <div class="portfolio-card">
+                <h2>{{ portfolio.name }}</h2>
+                <div class="portfolio-info">
+                    <p><span class="label">Currency:</span> {{ portfolio.base_currency }}</p>
+                    <p><span class="label">User ID:</span> {{ portfolio.user_id }}</p>
+                </div>
+                
+                <div class="holdings-summary">
+                    <h3>Holdings</h3>
+                    <ul>
+                    {% for holding in portfolio.holdings %}
+                        <li>
+                            <p><span class="label">Stock Name:</span> {{ holding.stock_symbol }} - {{ holding.stock_name }}</p>
+                            <p><span class="label">Quantity:</span> {{ "%.2f"|format(holding.quantity) }}</p>
+                            <p><span class="label">Purchase Price:</span> {{ "%.2f"|format(holding.purchase_price) }}</p>
+                            <p><span class="label">Purchase Date:</span> {{ holding.purchase_date.strftime('%Y-%m-%d') }}</p>
+                        </li>
+                    {% endfor %}
+                    </ul>
+                </div>
+
+                <div class="portfolio-footer">
+                    <p><span class="label">Created:</span> {{ portfolio.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-message">
+                <h2>No Portfolios Yet</h2>
+                <p>Create your first portfolio to get started!</p>
+                <a href="{{ url_for('new_portfolio') }}" class="btn-primary">Create Portfolio</a>
+            </div>
+        </div>
+        {% endif %}
     </div>
-    <button onclick="window.location.href='/portfolios/new'">Create New Portfolio</button>
-</div>
-{% endblock %} 
+</body>
+</html> 
