@@ -1,17 +1,25 @@
 from flask import Flask, request, jsonify, render_template, url_for
 from pymongo import MongoClient
+from bson import ObjectId
+from bson.decimal128 import Decimal128
+from datetime import datetime, timezone
+from decimal import Decimal
 import logging
+import traceback
 from pathlib import Path
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Initialize Flask with correct template and static paths
 app = Flask(__name__, 
     template_folder='web/templates',
-    static_folder='web/static',  # Add static folder path
-    static_url_path='/static'    # URL prefix for static files
+    static_folder='web/static',
+    static_url_path='/static'
 )
 
 # MongoDB connection
@@ -22,6 +30,7 @@ try:
     client = MongoClient(MONGODB_URL)
     db = client[DATABASE_NAME]
     stocks_collection = db.master_stocks
+    portfolios_collection = db.portfolios
     logger.info(f"Connected to MongoDB. Found {stocks_collection.count_documents({})} stocks")
 except Exception as e:
     logger.error(f"MongoDB connection failed: {e}")
@@ -34,14 +43,15 @@ def home():
     return "Portfolio Tracker Home"
 
 @app.route('/portfolios/new', methods=['GET'])
-def create_portfolio():
+def new_portfolio():
     """Render portfolio creation page"""
     try:
         logger.info("Rendering portfolio creation page")
         return render_template('portfolio/create.html')
     except Exception as e:
-        logger.error(f"Template rendering error: {e}")
-        return str(e), 500
+        logger.error(f"Error rendering portfolio creation page: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Failed to render portfolio creation page'}), 500
 
 @app.route('/portfolios/api/stocks/search')
 def search_stocks():
@@ -102,9 +112,85 @@ def check_template():
         'full_path': str(template_path.absolute())
     }
 
+@app.route('/portfolios/create', methods=['POST'])
+def create_portfolio():
+    """Create a new portfolio"""
+    try:
+        # Log the incoming request
+        logger.info("Received portfolio creation request")
+        
+        if not request.is_json:
+            logger.error("Request does not contain JSON data")
+            return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+        data = request.json
+        logger.info(f"Received portfolio data: {data}")
+
+        # Validate required fields
+        required_fields = ['name', 'user_id', 'base_currency', 'holdings']
+        for field in required_fields:
+            if field not in data:
+                logger.error(f"Missing required field: {field}")
+                return jsonify({'error': f"Missing required field: {field}"}), 400
+
+        # Validate holdings data
+        if not data['holdings']:
+            logger.error("Portfolio must have at least one holding")
+            return jsonify({'error': "Portfolio must have at least one holding"}), 400
+
+        for holding in data['holdings']:
+            required_holding_fields = ['stock_id', 'quantity', 'purchase_price', 'purchase_date']
+            for field in required_holding_fields:
+                if field not in holding:
+                    logger.error(f"Missing required holding field: {field}")
+                    return jsonify({'error': f"Missing required holding field: {field}"}), 400
+
+        # Create portfolio document with proper MongoDB types
+        try:
+            current_time = datetime.now(timezone.utc)
+            portfolio = {
+                'id': str(ObjectId()),
+                'user_id': data['user_id'],
+                'name': data['name'],
+                'base_currency': data['base_currency'],
+                'holdings': [{
+                    'stock_id': h['stock_id'],
+                    'quantity': Decimal128(str(h['quantity'])),  # Convert to Decimal128
+                    'purchase_price': Decimal128(str(h['purchase_price'])),  # Convert to Decimal128
+                    'purchase_date': datetime.strptime(h['purchase_date'], '%Y-%m-%d').replace(tzinfo=timezone.utc)
+                } for h in data['holdings']],
+                'created_at': current_time,
+                'updated_at': current_time
+            }
+            
+            logger.info(f"Prepared portfolio document: {portfolio}")
+            
+        except ValueError as e:
+            logger.error(f"Data conversion error: {e}")
+            return jsonify({'error': f"Invalid data format: {str(e)}"}), 400
+
+        # Insert into database
+        try:
+            result = portfolios_collection.insert_one(portfolio)
+            logger.info(f"Created portfolio with ID: {result.inserted_id}")
+            
+            return jsonify({
+                'success': True,
+                'message': 'Portfolio created successfully',
+                'portfolio_id': str(result.inserted_id)
+            })
+        except Exception as e:
+            logger.error(f"Database insertion error: {e}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': 'Failed to save portfolio to database'}), 500
+
+    except Exception as e:
+        logger.error(f"Unexpected error in create_portfolio: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Internal server error'}), 500
+
 if __name__ == '__main__':
-    # Print startup information
+    logger.info(f"Starting Flask application...")
     logger.info(f"Template folder: {app.template_folder}")
     logger.info(f"Static folder: {app.static_folder}")
-    logger.info(f"Running Flask app on http://localhost:8000")
     app.run(debug=True, port=8000) 

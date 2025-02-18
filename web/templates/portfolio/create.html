@@ -49,6 +49,36 @@
             color: red;
             font-size: 0.8em;
         }
+        .validation-message {
+            margin-left: 10px;
+            font-size: 0.9em;
+        }
+        .stock-details {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .stock-details input {
+            padding: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .stock-details input:disabled {
+            background-color: #f5f5f5;
+            cursor: not-allowed;
+        }
+        .btn-secondary {
+            background-color: #6c757d;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .btn-secondary:hover {
+            background-color: #5a6268;
+        }
     </style>
 </head>
 <body>
@@ -63,6 +93,11 @@
                 <div class="form-group">
                     <label for="portfolioName">Portfolio Name*</label>
                     <input type="text" id="portfolioName" required maxlength="100">
+                </div>
+
+                <div class="form-group">
+                    <label for="userId">User ID*</label>
+                    <input type="text" id="userId" required>
                 </div>
 
                 <div class="form-group">
@@ -236,6 +271,8 @@
                            onchange="updateStockDetails('${stockId}', 'purchase_date', this.value)"
                            required>
                 </div>
+                <button onclick="saveStockDetails('${stockId}')" class="btn-secondary">Save Details</button>
+                <span class="validation-message" id="validation-${stockId}"></span>
             </div>
             <button onclick="removeStock('${stockId}')" class="btn-danger">Remove</button>
         `;
@@ -338,54 +375,136 @@
     });
 
     // Save portfolio function
+    async function savePortfolio() {
+        if (!validatePortfolio()) return;
+
+        try {
+            const holdings = Array.from(selectedStocks.values()).map(stock => ({
+                stock_id: stock.id,
+                quantity: parseFloat(stock.quantity),
+                purchase_price: parseFloat(stock.purchase_price),
+                purchase_date: stock.purchase_date
+            }));
+
+            const portfolioData = {
+                name: document.getElementById('portfolioName').value,
+                user_id: document.getElementById('userId').value,
+                base_currency: document.getElementById('baseCurrency').value,
+                holdings: holdings
+            };
+
+            console.log('Sending portfolio data:', portfolioData);
+
+            const response = await fetch('/portfolios/create', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(portfolioData)
+            });
+
+            let result;
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                result = await response.json();
+            } else {
+                throw new Error('Received non-JSON response from server');
+            }
+
+            if (response.ok) {
+                alert('Portfolio created successfully!');
+                console.log('Server response:', result);
+                window.location.href = '/portfolios';
+            } else {
+                throw new Error(result.error || 'Failed to create portfolio');
+            }
+        } catch (error) {
+            console.error('Error creating portfolio:', error);
+            alert('Error creating portfolio: ' + error.message);
+        }
+    }
+
+    // Add logging to validatePortfolio function
     function validatePortfolio() {
+        console.log('Validating portfolio...');
+        
         const name = document.getElementById('portfolioName').value;
+        const userId = document.getElementById('userId').value;
         const baseCurrency = document.getElementById('baseCurrency').value;
         
+        console.log('Portfolio details:', { name, userId, baseCurrency });
+        console.log('Selected stocks:', selectedStocks);
+
         if (!name || name.length > 100) {
+            console.error('Invalid portfolio name');
             alert('Portfolio name is required and must be less than 100 characters');
             return false;
         }
 
+        if (!userId) {
+            console.error('Missing user ID');
+            alert('User ID is required');
+            return false;
+        }
+
         if (!baseCurrency || !['USD', 'INR'].includes(baseCurrency)) {
+            console.error('Invalid currency');
             alert('Please select a valid base currency');
             return false;
         }
 
         if (selectedStocks.size === 0) {
+            console.error('No stocks selected');
             alert('Please add at least one stock to the portfolio');
             return false;
         }
 
         // Validate each stock's details
-        for (const [_, stock] of selectedStocks) {
+        for (const [stockId, stock] of selectedStocks) {
+            console.log(`Validating stock: ${stockId}`, stock);
             if (!stock.quantity || !stock.purchase_price || !stock.purchase_date) {
-                alert('Please fill in all details for each selected stock');
+                console.error(`Incomplete details for stock: ${stockId}`);
+                alert('Please fill in and save all details for each selected stock');
                 return false;
             }
         }
 
+        console.log('Portfolio validation successful');
         return true;
     }
 
-    async function savePortfolio() {
-        if (!validatePortfolio()) return;
+    // Add function to enable editing of saved stock details
+    function editStockDetails(stockId) {
+        const stockElement = document.querySelector(`.stock-item[data-stock-id="${stockId}"]`);
+        const inputs = stockElement.querySelectorAll('input');
+        inputs.forEach(input => {
+            input.removeAttribute('disabled');
+        });
+        document.getElementById(`validation-${stockId}`).innerHTML = '';
+    }
 
-        const holdings = Array.from(selectedStocks.values()).map(stock => ({
-            stock_id: stock.id,
-            quantity: parseFloat(stock.quantity),
-            purchase_price: parseFloat(stock.purchase_price),
-            purchase_date: new Date(stock.purchase_date)
-        }));
+    // Update the saveStockDetails function
+    function saveStockDetails(stockId) {
+        const stockData = selectedStocks.get(stockId);
+        if (!stockData) return;
 
-        const portfolioData = {
-            name: document.getElementById('portfolioName').value,
-            base_currency: document.getElementById('baseCurrency').value,
-            holdings: holdings
-        };
+        // Validate the stock details
+        if (!stockData.quantity || !stockData.purchase_price || !stockData.purchase_date) {
+            document.getElementById(`validation-${stockId}`).innerHTML = 
+                '<span class="validation-error">Please fill all fields</span>';
+            return;
+        }
 
-        console.log('Portfolio data to save:', portfolioData);
-        // TODO: Add API call to save portfolio
+        // Show success message
+        document.getElementById(`validation-${stockId}`).innerHTML = 
+            '<span style="color: green;">Details saved ✓</span>';
+
+        // Disable inputs after saving (optional)
+        const stockElement = document.querySelector(`.stock-item[data-stock-id="${stockId}"]`);
+        const inputs = stockElement.querySelectorAll('input');
+        inputs.forEach(input => {
+            input.setAttribute('disabled', 'true');
+        });
     }
     </script>
 
