@@ -236,6 +236,108 @@ def list_portfolios():
         logger.error(traceback.format_exc())
         return jsonify({'error': 'Failed to fetch portfolios'}), 500
 
+@app.route('/portfolios/<portfolio_id>/edit', methods=['GET', 'POST'])
+def edit_portfolio(portfolio_id):
+    """Edit portfolio page"""
+    try:
+        if request.method == 'GET':
+            logger.info(f"Fetching portfolio with ID: {portfolio_id}")
+            
+            # Fetch the portfolio
+            portfolio = portfolios_collection.find_one({'_id': ObjectId(portfolio_id)})
+            if not portfolio:
+                logger.error(f"Portfolio not found: {portfolio_id}")
+                return jsonify({'error': 'Portfolio not found'}), 404
+
+            # Convert ObjectId to string
+            portfolio['_id'] = str(portfolio['_id'])
+            
+            # Log holdings for debugging
+            logger.info(f"Portfolio holdings before processing: {portfolio.get('holdings', [])}")
+            
+            # Create a list of ObjectIds for stock lookup
+            stock_ids = [ObjectId(holding['stock_id']) for holding in portfolio.get('holdings', [])]
+            logger.info(f"Looking up stocks with IDs: {stock_ids}")
+            
+            # Fetch all required stocks in one query
+            stocks_cursor = stocks_collection.find({'_id': {'$in': stock_ids}})
+            stocks = {}
+            for stock in stocks_cursor:
+                stock_id = str(stock['_id'])
+                stocks[stock_id] = {
+                    'symbol': stock.get('identifiers', {}).get('nse_code', ''),
+                    'name': stock.get('display_name', '')
+                }
+                logger.info(f"Found stock: {stock_id} -> {stocks[stock_id]}")
+            
+            # Convert Decimal128 to float and add stock details for display
+            for holding in portfolio.get('holdings', []):
+                if 'quantity' in holding:
+                    holding['quantity'] = float(holding['quantity'].to_decimal())
+                if 'purchase_price' in holding:
+                    holding['purchase_price'] = float(holding['purchase_price'].to_decimal())
+                
+                # Add stock details from our fetched stocks
+                stock_info = stocks.get(holding['stock_id'])
+                if stock_info:
+                    holding['stock_symbol'] = stock_info['symbol']
+                    holding['stock_name'] = stock_info['name']
+                    logger.info(f"Mapped holding {holding['stock_id']} to stock: {stock_info}")
+                else:
+                    logger.error(f"No stock found for ID: {holding['stock_id']}")
+                    holding['stock_symbol'] = 'Unknown'
+                    holding['stock_name'] = 'Stock Not Found'
+
+            logger.info(f"Final portfolio data: {portfolio}")
+            return render_template('portfolio/edit.html', portfolio=portfolio)
+        
+        elif request.method == 'POST':
+            data = request.json
+            logger.info(f"Received edit data: {data}")
+
+            # Validate required fields
+            required_fields = ['name', 'user_id', 'base_currency', 'holdings']
+            for field in required_fields:
+                if field not in data:
+                    return jsonify({'error': f"Missing required field: {field}"}), 400
+
+            # Update portfolio with proper MongoDB types
+            try:
+                updated_portfolio = {
+                    'name': data['name'],
+                    'user_id': data['user_id'],
+                    'base_currency': data['base_currency'],
+                    'holdings': [{
+                        'stock_id': h['stock_id'],
+                        'quantity': Decimal128(str(h['quantity'])),
+                        'purchase_price': Decimal128(str(h['purchase_price'])),
+                        'purchase_date': datetime.strptime(h['purchase_date'], '%Y-%m-%d').replace(tzinfo=timezone.utc)
+                    } for h in data['holdings']],
+                    'updated_at': datetime.now(timezone.utc)
+                }
+
+                result = portfolios_collection.update_one(
+                    {'_id': ObjectId(portfolio_id)},
+                    {'$set': updated_portfolio}
+                )
+
+                if result.modified_count == 0:
+                    return jsonify({'error': 'Portfolio not found or no changes made'}), 404
+
+                return jsonify({
+                    'success': True,
+                    'message': 'Portfolio updated successfully'
+                })
+
+            except ValueError as e:
+                logger.error(f"Data conversion error: {e}")
+                return jsonify({'error': f"Invalid data format: {str(e)}"}), 400
+
+    except Exception as e:
+        logger.error(f"Error in edit_portfolio: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Internal server error'}), 500
+
 if __name__ == '__main__':
     logger.info(f"Starting Flask application...")
     logger.info(f"Template folder: {app.template_folder}")

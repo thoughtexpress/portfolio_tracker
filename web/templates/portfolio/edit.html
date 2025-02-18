@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Edit Portfolio</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .search-section {
+            margin: 20px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        #stockSearchResults {
+            margin-top: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .search-result-item {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .save-status {
+            margin-left: 10px;
+            font-size: 0.9em;
+            color: #28a745;
+        }
+        .holding-details input.saved {
+            background-color: #e8f5e9;
+        }
+        .holding-details {
+            position: relative;
+        }
+        .save-status {
+            display: none;
+            position: absolute;
+            right: 10px;
+            top: -20px;
+            background: #28a745;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <div class="header">
+            <h1>Edit Portfolio</h1>
+        </div>
+
+        <div class="portfolio-form">
+            <form id="editPortfolioForm" onsubmit="return false;">
+                <div class="form-group">
+                    <label for="portfolioName" class="label">Portfolio Name</label>
+                    <input type="text" id="portfolioName" value="{{ portfolio.name }}" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="userId" class="label">User ID</label>
+                    <input type="text" id="userId" value="{{ portfolio.user_id }}" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="baseCurrency" class="label">Base Currency</label>
+                    <select id="baseCurrency" required>
+                        <option value="INR" {% if portfolio.base_currency == 'INR' %}selected{% endif %}>INR</option>
+                        <option value="USD" {% if portfolio.base_currency == 'USD' %}selected{% endif %}>USD</option>
+                    </select>
+                </div>
+
+                <div class="search-section">
+                    <h3>Add New Stock</h3>
+                    <div class="form-group">
+                        <label for="stockSearch" class="label">Search Stock</label>
+                        <input type="text" id="stockSearch" placeholder="Search for stocks...">
+                        <div id="stockSearchResults"></div>
+                    </div>
+                </div>
+
+                <div class="holdings-section">
+                    <h3>Current Holdings</h3>
+                    <div id="holdingsList">
+                        {% for holding in portfolio.holdings %}
+                        <div class="holding-item" data-stock-id="{{ holding.stock_id }}">
+                            <div class="stock-info">
+                                <p class="stock-name">{{ holding.stock_name }}</p>
+                            </div>
+                            <div class="holding-details">
+                                <div class="form-group">
+                                    <label class="label">Quantity</label>
+                                    <input type="number" class="quantity" value="{{ "%.2f"|format(holding.quantity) }}" step="0.01" required>
+                                </div>
+                                <div class="form-group">
+                                    <label class="label">Purchase Price</label>
+                                    <input type="number" class="purchase-price" value="{{ "%.2f"|format(holding.purchase_price) }}" step="0.01" required>
+                                </div>
+                                <div class="form-group">
+                                    <label class="label">Purchase Date</label>
+                                    <input type="date" class="purchase-date" value="{{ holding.purchase_date.strftime('%Y-%m-%d') }}" required>
+                                </div>
+                                <div class="button-group">
+                                    <button type="button" class="btn-secondary" onclick="saveStockDetails(this)">Save Details</button>
+                                    <button type="button" class="btn-danger" onclick="removeHolding(this)">Remove</button>
+                                </div>
+                                <span class="save-status"></span>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" onclick="savePortfolio()" class="btn-primary">Save Changes</button>
+                    <a href="{{ url_for('list_portfolios') }}" class="btn-secondary">Cancel</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        function debounce(func, wait) {
+            let timeout;
+            return function(...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(this, args), wait);
+            };
+        }
+
+        const searchStocks = debounce(async (query) => {
+            if (query.length < 2) return;
+
+            try {
+                const response = await fetch(`/portfolios/api/stocks/search?query=${encodeURIComponent(query)}`);
+                const stocks = await response.json();
+                
+                const resultsDiv = document.getElementById('stockSearchResults');
+                resultsDiv.innerHTML = stocks.map(stock => `
+                    <div class="search-result-item">
+                        <div class="stock-info">
+                            <span class="stock-symbol">${stock.symbol}</span>
+                            <span class="stock-name">${stock.name}</span>
+                        </div>
+                        <button onclick="addNewStock('${stock.id}', '${stock.symbol}', '${stock.name}')" 
+                                class="btn-primary">Add</button>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Search error:', error);
+            }
+        }, 300);
+
+        function addNewStock(stockId, symbol, name) {
+            const holdingsList = document.getElementById('holdingsList');
+            const today = new Date().toISOString().split('T')[0];
+            
+            const newHolding = document.createElement('div');
+            newHolding.className = 'holding-item';
+            newHolding.dataset.stockId = stockId;
+            newHolding.innerHTML = `
+                <div class="stock-info">
+                    <p class="stock-name">${name}</p>
+                </div>
+                <div class="holding-details">
+                    <div class="form-group">
+                        <label class="label">Quantity</label>
+                        <input type="number" class="quantity" value="0" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="label">Purchase Price</label>
+                        <input type="number" class="purchase-price" value="0" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="label">Purchase Date</label>
+                        <input type="date" class="purchase-date" value="${today}" required>
+                    </div>
+                    <div class="button-group">
+                        <button type="button" class="btn-secondary" onclick="saveStockDetails(this)">Save Details</button>
+                        <button type="button" class="btn-danger" onclick="removeHolding(this)">Remove</button>
+                    </div>
+                    <span class="save-status"></span>
+                </div>
+            `;
+            
+            holdingsList.appendChild(newHolding);
+        }
+
+        function removeHolding(button) {
+            if (confirm('Are you sure you want to remove this holding?')) {
+                button.closest('.holding-item').remove();
+            }
+        }
+
+        function saveStockDetails(button) {
+            const holdingItem = button.closest('.holding-item');
+            const inputs = holdingItem.querySelectorAll('input');
+            const saveStatus = holdingItem.querySelector('.save-status');
+            
+            let isValid = true;
+            inputs.forEach(input => {
+                if (!input.value) {
+                    isValid = false;
+                    input.classList.add('error');
+                } else {
+                    input.classList.remove('error');
+                }
+            });
+
+            if (!isValid) {
+                alert('Please fill in all fields');
+                return;
+            }
+
+            const stockData = {
+                stock_id: holdingItem.dataset.stockId,
+                quantity: parseFloat(holdingItem.querySelector('.quantity').value),
+                purchase_price: parseFloat(holdingItem.querySelector('.purchase-price').value),
+                purchase_date: holdingItem.querySelector('.purchase-date').value
+            };
+
+            savedStocks.set(stockData.stock_id, stockData);
+
+            inputs.forEach(input => {
+                input.classList.add('saved');
+            });
+
+            saveStatus.style.display = 'block';
+            saveStatus.textContent = 'Details Saved!';
+            
+            setTimeout(() => {
+                saveStatus.style.display = 'none';
+            }, 2000);
+        }
+
+        const savedStocks = new Map();
+
+        async function savePortfolio() {
+            try {
+                const holdings = Array.from(document.querySelectorAll('.holding-item')).map(item => {
+                    const stockId = item.dataset.stockId;
+                    if (savedStocks.has(stockId)) {
+                        return savedStocks.get(stockId);
+                    }
+                    return {
+                        stock_id: stockId,
+                        quantity: parseFloat(item.querySelector('.quantity').value),
+                        purchase_price: parseFloat(item.querySelector('.purchase-price').value),
+                        purchase_date: item.querySelector('.purchase-date').value
+                    };
+                });
+
+                const portfolioData = {
+                    name: document.getElementById('portfolioName').value,
+                    user_id: document.getElementById('userId').value,
+                    base_currency: document.getElementById('baseCurrency').value,
+                    holdings: holdings
+                };
+
+                const response = await fetch('/portfolios/{{ portfolio._id }}/edit', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(portfolioData)
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    alert('Portfolio updated successfully!');
+                    window.location.href = '/portfolios';
+                } else {
+                    throw new Error(result.error || 'Failed to update portfolio');
+                }
+            } catch (error) {
+                console.error('Error updating portfolio:', error);
+                alert('Error updating portfolio: ' + error.message);
+            }
+        }
+
+        document.getElementById('stockSearch').addEventListener('input', (e) => {
+            searchStocks(e.target.value);
+        });
+    </script>
+</body>
+</html> 
