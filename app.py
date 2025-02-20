@@ -10,6 +10,8 @@ from pathlib import Path
 from werkzeug.utils import secure_filename
 import csv
 import io
+import pandas as pd
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -746,6 +748,183 @@ def update_portfolio_holdings_batch(portfolio_id, transaction_ids):
     except Exception as e:
         logger.error(f"Error updating portfolio holdings batch: {e}")
         raise
+
+@app.route('/brokers', methods=['GET', 'POST'])
+def manage_brokers():
+    if request.method == 'POST':
+        data = request.json
+        broker = {
+            'name': data['name'],
+            'api_settings': {
+                'api_key': data.get('api_key', ''),
+                'api_secret': data.get('api_secret', ''),
+                'base_url': data.get('base_url', '')
+            },
+            'charge_structure': {
+                'brokerage_percentage': Decimal128(str(data.get('brokerage_percentage', 0))),
+                'gst_percentage': Decimal128(str(data.get('gst_percentage', 0.18))),
+                'stt_percentage': Decimal128(str(data.get('stt_percentage', 0.001))),
+                'stamp_duty_percentage': Decimal128(str(data.get('stamp_duty_percentage', 0.00015))),
+                'exchange_charges_percentage': Decimal128(str(data.get('exchange_charges_percentage', 0.0000345))),
+                'sebi_charges_percentage': Decimal128(str(data.get('sebi_charges_percentage', 0.0000001)))
+            },
+            'status': 'ACTIVE'
+        }
+        
+        db.brokers.insert_one(broker)
+        return jsonify({'message': 'Broker added successfully'})
+        
+    brokers = list(db.brokers.find())
+    return render_template('brokers/list.html', brokers=brokers)
+
+@app.route('/brokers/<broker_id>', methods=['PUT', 'DELETE'])
+def manage_broker(broker_id):
+    if request.method == 'DELETE':
+        db.brokers.delete_one({'_id': ObjectId(broker_id)})
+        return jsonify({'message': 'Broker deleted successfully'})
+    
+    data = request.json
+    db.brokers.update_one(
+        {'_id': ObjectId(broker_id)},
+        {'$set': data}
+    )
+    return jsonify({'message': 'Broker updated successfully'})
+
+class UpstoxTransactionImporter:
+    def __init__(self, db):
+        self.db = db
+
+    def clean_amount(self, amount):
+        if isinstance(amount, str):
+            return float(amount.replace('?', '').replace(',', ''))
+        return float(amount)
+
+    def import_transactions(self, file_path):
+        try:
+            # Read CSV file
+            df = pd.read_csv(file_path)
+            
+            # Clean and transform data
+            transactions = []
+            for _, row in df.iterrows():
+                # Clean monetary values
+                price = self.clean_amount(row['Price'])
+                amount = self.clean_amount(row['Amount'])
+                quantity = float(row['Quantity'])
+                
+                # Get or create stock
+                stock = self.get_or_create_stock(row['Company'], row['Scrip Code'])
+                
+                transaction = {
+                    'stock_id': str(stock['_id']),
+                    'transaction_type': 'BUY' if row['Side'] == 'Buy' else 'SELL',
+                    'quantity': Decimal128(str(quantity)),
+                    'price': Decimal128(str(price)),
+                    'date': datetime.strptime(row['Date'], '%d-%m-%Y').replace(tzinfo=timezone.utc),
+                    'broker': {
+                        'name': 'UPSTOX',
+                        'transaction_id': str(row['Trade Num'])
+                    },
+                    'exchange': row['Exchange'],
+                    'segment': row['Segment'],
+                    'instrument_type': row['Instrument Type'],
+                    'trade_time': datetime.strptime(f"{row['Date']} {row['Trade Time']}", 
+                                                  '%d-%m-%Y %H:%M:%S').replace(tzinfo=timezone.utc),
+                    'status': 'COMPLETED',
+                    'charges': self.calculate_charges(amount),
+                    'created_at': datetime.now(timezone.utc),
+                    'updated_at': datetime.now(timezone.utc)
+                }
+                transactions.append(transaction)
+            
+            # Insert transactions
+            if transactions:
+                result = self.db.transactions.insert_many(transactions)
+                return len(result.inserted_ids)
+            return 0
+            
+        except Exception as e:
+            logger.error(f"Error importing Upstox transactions: {e}")
+            raise
+
+    def get_or_create_stock(self, company_name, scrip_code):
+        # Try to find existing stock
+        stock = self.db.stocks_collection.find_one({
+            'identifiers.nse_code': scrip_code
+        })
+        
+        if stock:
+            return stock
+            
+        # Create new stock if not found
+        new_stock = {
+            'display_name': company_name,
+            'identifiers': {
+                'nse_code': scrip_code
+            },
+            'created_at': datetime.now(timezone.utc),
+            'updated_at': datetime.now(timezone.utc)
+        }
+        
+        result = self.db.stocks_collection.insert_one(new_stock)
+        return self.db.stocks_collection.find_one({'_id': result.inserted_id})
+
+    def calculate_charges(self, amount):
+        # Get Upstox charge structure
+        broker = self.db.brokers.find_one({'name': 'UPSTOX'})
+        if not broker:
+            return {
+                'brokerage': Decimal128('0'),
+                'gst': Decimal128('0'),
+                'stt': Decimal128('0'),
+                'stamp_duty': Decimal128('0'),
+                'exchange_charges': Decimal128('0'),
+                'sebi_charges': Decimal128('0')
+            }
+            
+        structure = broker['charge_structure']
+        return {
+            'brokerage': Decimal128(str(amount * float(structure['brokerage_percentage'].to_decimal()))),
+            'gst': Decimal128(str(amount * float(structure['gst_percentage'].to_decimal()))),
+            'stt': Decimal128(str(amount * float(structure['stt_percentage'].to_decimal()))),
+            'stamp_duty': Decimal128(str(amount * float(structure['stamp_duty_percentage'].to_decimal()))),
+            'exchange_charges': Decimal128(str(amount * float(structure['exchange_charges_percentage'].to_decimal()))),
+            'sebi_charges': Decimal128(str(amount * float(structure['sebi_charges_percentage'].to_decimal())))
+        }
+
+# Add this route to handle Upstox file uploads
+@app.route('/transactions/import/upstox', methods=['POST'])
+def import_upstox_transactions():
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+            
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+
+        if not file.filename.endswith('.csv'):
+            return jsonify({'error': 'File must be a CSV'}), 400
+
+        # Save file temporarily
+        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(file.filename))
+        file.save(temp_path)
+
+        # Import transactions
+        importer = UpstoxTransactionImporter(db)
+        count = importer.import_transactions(temp_path)
+
+        # Clean up
+        os.remove(temp_path)
+
+        return jsonify({
+            'message': f'Successfully imported {count} transactions',
+            'count': count
+        })
+
+    except Exception as e:
+        logger.error(f"Error importing Upstox transactions: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     logger.info(f"Starting Flask application...")

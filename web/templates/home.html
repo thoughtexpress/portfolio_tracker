@@ -5,9 +5,78 @@
 {% block content %}
 <div class="dashboard">
     <h1>Welcome to Portfolio Tracker</h1>
+    
     <div class="quick-actions">
-        <a href="{{ url_for('new_portfolio') }}" class="btn-primary">Create New Portfolio</a>
-        <a href="{{ url_for('list_portfolios') }}" class="btn-secondary">View Portfolios</a>
+        <div class="quick-action-card">
+            <h3>Portfolios</h3>
+            <div class="btn-group">
+                <a href="{{ url_for('new_portfolio') }}" class="btn-primary">Create New</a>
+                <a href="{{ url_for('list_portfolios') }}" class="btn-secondary">View All</a>
+            </div>
+        </div>
+
+        <div class="quick-action-card">
+            <h3>Transactions</h3>
+            <div class="btn-group">
+                <a href="{{ url_for('new_transaction') }}" class="btn-primary">Add New</a>
+                <a href="{{ url_for('list_transactions') }}" class="btn-secondary">View All</a>
+            </div>
+        </div>
+
+        <div class="quick-action-card">
+            <h3>Import Data</h3>
+            <div class="btn-group">
+                <a href="{{ url_for('import_transactions') }}" class="btn-primary">Import Transactions</a>
+            </div>
+        </div>
+
+        <div class="quick-action-card">
+            <h3>Broker Settings</h3>
+            <div class="btn-group">
+                <a href="{{ url_for('manage_brokers') }}" class="btn-primary">Manage Brokers</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="dashboard-sections">
+        <!-- Recent Transactions Section -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <h2>Recent Transactions</h2>
+                <a href="{{ url_for('list_transactions') }}" class="view-all">View All →</a>
+            </div>
+            <div class="transaction-list">
+                {% for transaction in recent_transactions %}
+                <div class="transaction-item">
+                    <div class="transaction-header">
+                        <span class="date">{{ transaction.date.strftime('%Y-%m-%d') }}</span>
+                        <span class="type {{ transaction.transaction_type.lower() }}">
+                            {{ transaction.transaction_type }}
+                        </span>
+                    </div>
+                    <div class="transaction-details">
+                        <span class="stock">{{ transaction.stock_name }}</span>
+                        <span class="quantity">{{ "%.2f"|format(transaction.quantity) }}</span>
+                        <span class="price">₹{{ "%.2f"|format(transaction.price) }}</span>
+                    </div>
+                    {% if transaction.portfolio_id %}
+                    <div class="portfolio-tag">
+                        {{ transaction.portfolio_name }}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Portfolio Summary Section -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <h2>Portfolio Summary</h2>
+                <a href="{{ url_for('list_portfolios') }}" class="view-all">View All →</a>
+            </div>
+            <!-- Add your portfolio summary content here -->
+        </div>
     </div>
 </div>
 {% endblock %} 

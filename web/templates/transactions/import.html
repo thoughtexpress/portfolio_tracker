@@ -39,6 +39,19 @@
             <a href="/static/templates/transactions_template.csv" download class="btn-secondary">Download Template</a>
         </div>
     </div>
+
+    <div class="import-section">
+        <h2>Import from Upstox</h2>
+        <form id="upstoxImportForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label class="label">Upstox Transaction Report (CSV)</label>
+                <input type="file" id="upstoxFile" accept=".csv" required>
+            </div>
+            <div class="form-actions">
+                <button type="button" onclick="importUpstoxTransactions()" class="btn-primary">Import from Upstox</button>
+            </div>
+        </form>
+    </div>
 </div>
 
 <script>
@@ -70,6 +83,38 @@ async function importTransactions() {
         }
     } catch (error) {
         console.error('Error importing transactions:', error);
+        alert('Error importing transactions: ' + error.message);
+    }
+}
+
+async function importUpstoxTransactions() {
+    const fileInput = document.getElementById('upstoxFile');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        alert('Please select a CSV file');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch('/transactions/import/upstox', {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            alert(`Successfully imported ${result.count} transactions from Upstox!`);
+            window.location.href = '/transactions';
+        } else {
+            throw new Error(result.error || 'Failed to import transactions');
+        }
+    } catch (error) {
+        console.error('Error importing Upstox transactions:', error);
         alert('Error importing transactions: ' + error.message);
     }
 }

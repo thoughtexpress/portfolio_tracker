@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Brokers - Portfolio Tracker{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <div class="header-actions">
+        <h1>Manage Brokers</h1>
+        <button onclick="showAddBrokerForm()" class="btn-primary">Add Broker</button>
+    </div>
+
+    <div class="brokers-list">
+        {% for broker in brokers %}
+        <div class="broker-card">
+            <div class="broker-header">
+                <h3>{{ broker.name }}</h3>
+                <span class="status {{ broker.status.lower() }}">{{ broker.status }}</span>
+            </div>
+            <div class="broker-details">
+                <h4>Charge Structure</h4>
+                <div class="charges-grid">
+                    <div class="charge-item">
+                        <label>Brokerage</label>
+                        <span>{{ "%.4f"|format(broker.charge_structure.brokerage_percentage) }}%</span>
+                    </div>
+                    <div class="charge-item">
+                        <label>GST</label>
+                        <span>{{ "%.2f"|format(broker.charge_structure.gst_percentage) }}%</span>
+                    </div>
+                    <!-- Add other charges -->
+                </div>
+                <div class="broker-actions">
+                    <button onclick="editBroker('{{ broker._id }}')" class="btn-secondary">Edit</button>
+                    <button onclick="deleteBroker('{{ broker._id }}')" class="btn-danger">Delete</button>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Add Broker Modal -->
+<div id="brokerModal" class="modal">
+    <div class="modal-content">
+        <h2>Add Broker</h2>
+        <form id="brokerForm">
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" id="brokerName" required>
+            </div>
+            <div class="form-group">
+                <label>Brokerage %</label>
+                <input type="number" id="brokeragePercentage" step="0.0001" required>
+            </div>
+            <!-- Add other fields -->
+            <div class="form-actions">
+                <button type="submit" class="btn-primary">Save</button>
+                <button type="button" onclick="closeBrokerModal()" class="btn-secondary">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+// Add JavaScript for broker management
+function showAddBrokerForm() {
+    document.getElementById('brokerModal').style.display = 'block';
+}
+
+function closeBrokerModal() {
+    document.getElementById('brokerModal').style.display = 'none';
+}
+
+async function saveBroker(event) {
+    event.preventDefault();
+    // Add broker save logic
+}
+
+async function editBroker(brokerId) {
+    // Add broker edit logic
+}
+
+async function deleteBroker(brokerId) {
+    // Add broker delete logic
+}
+</script>
+{% endblock %} 

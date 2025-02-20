@@ -65,8 +65,16 @@
                     </div>
                     <div class="form-group">
                         <label class="label">Stock</label>
-                        <input type="text" id="stockSearch" placeholder="Search stocks...">
-                        <div id="stockSearchResults"></div>
+                        <select id="stockSelect" required>
+                            <option value="">Select Stock</option>
+                            {% for stock in stocks %}
+                            <option value="{{ stock._id }}" 
+                                    data-symbol="{{ stock.identifiers.nse_code }}"
+                                    data-name="{{ stock.display_name }}">
+                                {{ stock.identifiers.nse_code }} - {{ stock.display_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
                     </div>
                 </div>
 
