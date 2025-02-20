@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+
+{% block title %}New Transaction - Portfolio Tracker{% endblock %}
+
+{% block extra_css %}
+<style>
+    .transaction-form {
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+    }
+
+    .form-section {
+        margin-bottom: 30px;
+    }
+
+    .charges-section {
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 4px;
+        margin-top: 20px;
+    }
+
+    .charges-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 15px;
+    }
+
+    .total-section {
+        margin-top: 20px;
+        padding-top: 20px;
+        border-top: 1px solid #ddd;
+    }
+
+    .form-row {
+        display: flex;
+        gap: 20px;
+        margin-bottom: 15px;
+    }
+
+    .form-group {
+        flex: 1;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <h1>New Transaction</h1>
+
+    <div class="transaction-form">
+        <form id="transactionForm" onsubmit="return false;">
+            <div class="form-section">
+                <h3>Transaction Details</h3>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="label">Portfolio</label>
+                        <select id="portfolioId" required onchange="updateStocksList()">
+                            <option value="">Select Portfolio</option>
+                            {% for portfolio in portfolios %}
+                            <option value="{{ portfolio._id }}">{{ portfolio.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="label">Stock</label>
+                        <input type="text" id="stockSearch" placeholder="Search stocks...">
+                        <div id="stockSearchResults"></div>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="label">Transaction Type</label>
+                        <select id="transactionType" required onchange="calculateCharges()">
+                            <option value="BUY">Buy</option>
+                            <option value="SELL">Sell</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="label">Quantity</label>
+                        <input type="number" id="quantity" required step="0.01" onchange="calculateCharges()">
+                    </div>
+                    <div class="form-group">
+                        <label class="label">Price</label>
+                        <input type="number" id="price" required step="0.01" onchange="calculateCharges()">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="label">Date</label>
+                        <input type="date" id="transactionDate" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="label">Broker</label>
+                        <select id="broker" required onchange="updateChargeStructure()">
+                            <option value="">Select Broker</option>
+                            {% for broker in brokers %}
+                            <option value="{{ broker.name }}">{{ broker.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="label">Broker Transaction ID</label>
+                        <input type="text" id="brokerTransactionId">
+                    </div>
+                </div>
+            </div>
+
+            <div class="charges-section">
+                <h3>Charges</h3>
+                <div class="charges-grid">
+                    <div class="form-group">
+                        <label class="label">Brokerage</label>
+                        <input type="number" id="brokerage" step="0.01" value="0">
+                    </div>
+                    <div class="form-group">
+                        <label class="label">GST</label>
+                        <input type="number" id="gst" step="0.01" value="0">
+                    </div>
+                    <div class="form-group">
+                        <label class="label">STT</label>
+                        <input type="number" id="stt" step="0.01" value="0">
+                    </div>
+                    <div class="form-group">
+                        <label class="label">Stamp Duty</label>
+                        <input type="number" id="stampDuty" step="0.01" value="0">
+                    </div>
+                    <div class="form-group">
+                        <label class="label">Exchange Charges</label>
+                        <input type="number" id="exchangeCharges" step="0.01" value="0">
+                    </div>
+                    <div class="form-group">
+                        <label class="label">SEBI Charges</label>
+                        <input type="number" id="sebiCharges" step="0.01" value="0">
+                    </div>
+                </div>
+            </div>
+
+            <div class="total-section">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="label">Total Value</label>
+                        <input type="number" id="totalValue" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label class="label">Total Charges</label>
+                        <input type="number" id="totalCharges" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label class="label">Net Amount</label>
+                        <input type="number" id="netAmount" readonly>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-section">
+                <label class="label">Notes</label>
+                <textarea id="notes" rows="3"></textarea>
+            </div>
+
+            <div class="form-actions">
+                <button type="button" onclick="saveTransaction()" class="btn-primary">Save Transaction</button>
+                <a href="{{ url_for('list_transactions') }}" class="btn-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+// Add the necessary JavaScript for:
+// 1. Stock search functionality
+// 2. Charge calculations
+// 3. Form validation
+// 4. Transaction saving
+// (Similar to the portfolio creation JavaScript, but adapted for transactions)
+</script>
+{% endblock %} 

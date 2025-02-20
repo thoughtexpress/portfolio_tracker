@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Import Transactions - Portfolio Tracker{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <h1>Import Transactions</h1>
+
+    <div class="import-section">
+        <form id="importForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label class="label">CSV File</label>
+                <input type="file" id="csvFile" accept=".csv" required>
+            </div>
+            <div class="form-actions">
+                <button type="button" onclick="importTransactions()" class="btn-primary">Import</button>
+                <a href="{{ url_for('list_transactions') }}" class="btn-secondary">Cancel</a>
+            </div>
+        </form>
+
+        <div class="template-section">
+            <h3>CSV Template Format</h3>
+            <p>Your CSV file should have the following columns:</p>
+            <ul>
+                <li>stock_id (required)</li>
+                <li>transaction_type (required: BUY or SELL)</li>
+                <li>quantity (required)</li>
+                <li>price (required)</li>
+                <li>date (required: YYYY-MM-DD)</li>
+                <li>broker_name (required)</li>
+                <li>broker_transaction_id (optional)</li>
+                <li>brokerage (optional)</li>
+                <li>gst (optional)</li>
+                <li>stt (optional)</li>
+                <li>stamp_duty (optional)</li>
+                <li>exchange_charges (optional)</li>
+                <li>sebi_charges (optional)</li>
+            </ul>
+            <a href="/static/templates/transactions_template.csv" download class="btn-secondary">Download Template</a>
+        </div>
+    </div>
+</div>
+
+<script>
+async function importTransactions() {
+    const fileInput = document.getElementById('csvFile');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        alert('Please select a CSV file');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch('/transactions/import', {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            alert('Transactions imported successfully!');
+            window.location.href = '/transactions';
+        } else {
+            throw new Error(result.error || 'Failed to import transactions');
+        }
+    } catch (error) {
+        console.error('Error importing transactions:', error);
+        alert('Error importing transactions: ' + error.message);
+    }
+}
+</script>
+{% endblock %} 

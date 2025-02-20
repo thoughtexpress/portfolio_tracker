@@ -7,6 +7,9 @@ from decimal import Decimal
 import logging
 import traceback
 from pathlib import Path
+from werkzeug.utils import secure_filename
+import csv
+import io
 
 # Configure logging
 logging.basicConfig(
@@ -39,8 +42,35 @@ except Exception as e:
 # Routes
 @app.route('/')
 def home():
-    """Home page"""
-    return "Portfolio Tracker Home"
+    """Home page with recent transactions"""
+    try:
+        # Fetch recent transactions
+        recent_transactions = list(db.transactions.find()
+                                 .sort('date', -1)
+                                 .limit(5))
+
+        # Fetch related data
+        stock_ids = {t['stock_id'] for t in recent_transactions}
+        portfolio_ids = {t['portfolio_id'] for t in recent_transactions if t.get('portfolio_id')}
+        
+        stocks = {str(s['_id']): s for s in db.stocks_collection.find({'_id': {'$in': list(map(ObjectId, stock_ids))}})}
+        portfolios = {str(p['_id']): p for p in db.portfolios.find({'_id': {'$in': list(map(ObjectId, portfolio_ids))}})}
+        
+        # Enrich transaction data
+        for transaction in recent_transactions:
+            transaction['_id'] = str(transaction['_id'])
+            stock = stocks.get(transaction['stock_id'], {})
+            transaction['stock_name'] = stock.get('display_name', 'Unknown Stock')
+            
+            if transaction.get('portfolio_id'):
+                portfolio = portfolios.get(transaction['portfolio_id'], {})
+                transaction['portfolio_name'] = portfolio.get('name', 'Unknown Portfolio')
+
+        return render_template('home.html', recent_transactions=recent_transactions)
+    except Exception as e:
+        logger.error(f"Error rendering home page: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Failed to render home page'}), 500
 
 @app.route('/portfolios/new', methods=['GET'])
 def new_portfolio():
@@ -337,6 +367,385 @@ def edit_portfolio(portfolio_id):
         logger.error(f"Error in edit_portfolio: {e}")
         logger.error(traceback.format_exc())
         return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/transactions')
+def list_transactions():
+    """Display all transactions"""
+    try:
+        portfolio_id = request.args.get('portfolio_id')
+        
+        # Build query
+        query = {}
+        if portfolio_id:
+            query['portfolio_id'] = portfolio_id
+
+        # Fetch transactions with pagination
+        page = int(request.args.get('page', 1))
+        per_page = 20
+        skip = (page - 1) * per_page
+        
+        transactions = list(db.transactions.find(query)
+                          .sort('date', -1)
+                          .skip(skip)
+                          .limit(per_page))
+
+        # Fetch related data
+        stock_ids = {t['stock_id'] for t in transactions}
+        portfolio_ids = {t['portfolio_id'] for t in transactions}
+        
+        stocks = {str(s['_id']): s for s in db.stocks_collection.find({'_id': {'$in': list(map(ObjectId, stock_ids))}})}
+        portfolios = {str(p['_id']): p for p in db.portfolios.find({'_id': {'$in': list(map(ObjectId, portfolio_ids))}})}
+        
+        # Enrich transaction data
+        for transaction in transactions:
+            transaction['_id'] = str(transaction['_id'])
+            stock = stocks.get(transaction['stock_id'], {})
+            transaction['stock_name'] = stock.get('display_name', 'Unknown Stock')
+            transaction['stock_symbol'] = stock.get('identifiers', {}).get('nse_code', '')
+            
+            portfolio = portfolios.get(transaction['portfolio_id'], {})
+            transaction['portfolio_name'] = portfolio.get('name', 'Unknown Portfolio')
+
+        return render_template('transactions/list.html', 
+                            transactions=transactions,
+                            current_page=page)
+
+    except Exception as e:
+        logger.error(f"Error in list_transactions: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/transactions/new', methods=['GET', 'POST'])
+def new_transaction():
+    """Create new transaction"""
+    try:
+        if request.method == 'GET':
+            portfolios = list(db.portfolios.find())
+            brokers = list(db.brokers.find({'status': 'ACTIVE'}))
+            return render_template('transactions/create.html', 
+                                portfolios=portfolios,
+                                brokers=brokers)
+        
+        elif request.method == 'POST':
+            data = request.json
+            
+            # Validate required fields
+            required_fields = ['portfolio_id', 'stock_id', 'transaction_type', 
+                             'quantity', 'price', 'date', 'broker']
+            for field in required_fields:
+                if field not in data:
+                    return jsonify({'error': f'Missing required field: {field}'}), 400
+
+            # Create transaction document
+            transaction = {
+                'id': str(ObjectId()),
+                'portfolio_id': data['portfolio_id'],
+                'stock_id': data['stock_id'],
+                'transaction_type': data['transaction_type'],
+                'quantity': Decimal128(str(data['quantity'])),
+                'price': Decimal128(str(data['price'])),
+                'date': datetime.strptime(data['date'], '%Y-%m-%d').replace(tzinfo=timezone.utc),
+                'broker': {
+                    'name': data['broker']['name'],
+                    'transaction_id': data['broker'].get('transaction_id', '')
+                },
+                'status': 'COMPLETED',
+                'charges': {
+                    'brokerage': Decimal128(str(data['charges'].get('brokerage', 0))),
+                    'gst': Decimal128(str(data['charges'].get('gst', 0))),
+                    'stt': Decimal128(str(data['charges'].get('stt', 0))),
+                    'stamp_duty': Decimal128(str(data['charges'].get('stamp_duty', 0))),
+                    'exchange_charges': Decimal128(str(data['charges'].get('exchange_charges', 0))),
+                    'sebi_charges': Decimal128(str(data['charges'].get('sebi_charges', 0)))
+                },
+                'notes': data.get('notes', ''),
+                'created_at': datetime.now(timezone.utc),
+                'updated_at': datetime.now(timezone.utc)
+            }
+
+            # Insert transaction
+            result = db.transactions.insert_one(transaction)
+            
+            # Update portfolio holdings
+            update_portfolio_holdings(data['portfolio_id'], transaction)
+
+            return jsonify({
+                'success': True,
+                'transaction_id': str(result.inserted_id)
+            })
+
+    except Exception as e:
+        logger.error(f"Error in new_transaction: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def update_portfolio_holdings(portfolio_id, transaction):
+    """Update portfolio holdings after a transaction"""
+    try:
+        portfolio = db.portfolios.find_one({'_id': ObjectId(portfolio_id)})
+        if not portfolio:
+            raise ValueError(f"Portfolio not found: {portfolio_id}")
+
+        holdings = portfolio.get('holdings', [])
+        stock_id = transaction['stock_id']
+        quantity = float(transaction['quantity'].to_decimal())
+        price = float(transaction['price'].to_decimal())
+
+        # Find existing holding
+        holding = next((h for h in holdings if h['stock_id'] == stock_id), None)
+
+        if transaction['transaction_type'] == 'BUY':
+            if holding:
+                # Update existing holding
+                old_quantity = float(holding['quantity'].to_decimal())
+                old_price = float(holding['purchase_price'].to_decimal())
+                new_quantity = old_quantity + quantity
+                # Calculate average purchase price
+                new_price = ((old_quantity * old_price) + (quantity * price)) / new_quantity
+                
+                holding['quantity'] = Decimal128(str(new_quantity))
+                holding['purchase_price'] = Decimal128(str(new_price))
+            else:
+                # Add new holding
+                holdings.append({
+                    'stock_id': stock_id,
+                    'quantity': Decimal128(str(quantity)),
+                    'purchase_price': Decimal128(str(price)),
+                    'purchase_date': transaction['date']
+                })
+        
+        elif transaction['transaction_type'] == 'SELL':
+            if not holding:
+                raise ValueError(f"No holding found for stock: {stock_id}")
+            
+            old_quantity = float(holding['quantity'].to_decimal())
+            if quantity > old_quantity:
+                raise ValueError(f"Insufficient quantity for sale. Have: {old_quantity}, Want to sell: {quantity}")
+            
+            new_quantity = old_quantity - quantity
+            if new_quantity == 0:
+                # Remove holding if quantity becomes zero
+                holdings = [h for h in holdings if h['stock_id'] != stock_id]
+            else:
+                holding['quantity'] = Decimal128(str(new_quantity))
+
+        # Update portfolio
+        db.portfolios.update_one(
+            {'_id': ObjectId(portfolio_id)},
+            {
+                '$set': {
+                    'holdings': holdings,
+                    'updated_at': datetime.now(timezone.utc)
+                }
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error updating portfolio holdings: {e}")
+        raise
+
+class TransactionManager:
+    @staticmethod
+    def create_transaction(data, portfolio_id=None):
+        transaction = {
+            'id': str(ObjectId()),
+            'portfolio_id': portfolio_id,  # Can be None
+            'stock_id': data['stock_id'],
+            'transaction_type': data['transaction_type'],
+            'quantity': Decimal128(str(data['quantity'])),
+            'price': Decimal128(str(data['price'])),
+            'date': datetime.strptime(data['date'], '%Y-%m-%d').replace(tzinfo=timezone.utc),
+            'broker': data['broker'],
+            'status': 'COMPLETED',
+            'charges': data['charges'],
+            'created_at': datetime.now(timezone.utc),
+            'updated_at': datetime.now(timezone.utc)
+        }
+        
+        # Insert transaction
+        result = db.transactions.insert_one(transaction)
+        
+        # Update portfolio holdings if portfolio_id is provided
+        if portfolio_id:
+            update_portfolio_holdings(portfolio_id, transaction)
+            
+        return str(result.inserted_id)
+
+    @staticmethod
+    def get_transactions(portfolio_id=None, filters=None):
+        query = {}
+        if portfolio_id:
+            query['portfolio_id'] = portfolio_id
+        if filters:
+            query.update(filters)
+            
+        return list(db.transactions.find(query).sort('date', -1))
+
+@app.route('/transactions/import', methods=['GET', 'POST'])
+def import_transactions():
+    """Import transactions from CSV"""
+    try:
+        if request.method == 'POST':
+            if 'file' not in request.files:
+                return jsonify({'error': 'No file provided'}), 400
+                
+            csv_file = request.files['file']
+            if csv_file.filename == '':
+                return jsonify({'error': 'No file selected'}), 400
+
+            if not csv_file.filename.endswith('.csv'):
+                return jsonify({'error': 'File must be a CSV'}), 400
+
+            # Read and parse CSV
+            stream = io.StringIO(csv_file.stream.read().decode("UTF8"), newline=None)
+            csv_reader = csv.DictReader(stream)
+            
+            transactions = []
+            for row in csv_reader:
+                try:
+                    transaction = {
+                        'stock_id': row['stock_id'],
+                        'transaction_type': row['transaction_type'].upper(),
+                        'quantity': Decimal128(str(row['quantity'])),
+                        'price': Decimal128(str(row['price'])),
+                        'date': datetime.strptime(row['date'], '%Y-%m-%d').replace(tzinfo=timezone.utc),
+                        'broker': {
+                            'name': row['broker_name'],
+                            'transaction_id': row.get('broker_transaction_id', '')
+                        },
+                        'status': 'COMPLETED',
+                        'charges': {
+                            'brokerage': Decimal128(str(row.get('brokerage', 0))),
+                            'gst': Decimal128(str(row.get('gst', 0))),
+                            'stt': Decimal128(str(row.get('stt', 0))),
+                            'stamp_duty': Decimal128(str(row.get('stamp_duty', 0))),
+                            'exchange_charges': Decimal128(str(row.get('exchange_charges', 0))),
+                            'sebi_charges': Decimal128(str(row.get('sebi_charges', 0)))
+                        },
+                        'created_at': datetime.now(timezone.utc),
+                        'updated_at': datetime.now(timezone.utc)
+                    }
+                    transactions.append(transaction)
+                except Exception as e:
+                    logger.error(f"Error processing row: {row}. Error: {e}")
+                    return jsonify({'error': f'Error in row: {row}. {str(e)}'}), 400
+
+            # Insert transactions
+            result = db.transactions.insert_many(transactions)
+            
+            return jsonify({
+                'message': f'Successfully imported {len(result.inserted_ids)} transactions',
+                'transaction_ids': [str(id) for id in result.inserted_ids]
+            })
+
+        # GET request - render import form
+        return render_template('transactions/import.html')
+
+    except Exception as e:
+        logger.error(f"Error in import_transactions: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/transactions/assign-portfolio', methods=['POST'])
+def assign_portfolio():
+    """Assign transactions to a portfolio"""
+    try:
+        data = request.json
+        transaction_ids = data.get('transaction_ids', [])
+        portfolio_id = data.get('portfolio_id')
+
+        if not transaction_ids or not portfolio_id:
+            return jsonify({'error': 'Missing required fields'}), 400
+
+        # Update transactions with portfolio ID
+        result = db.transactions.update_many(
+            {'_id': {'$in': [ObjectId(tid) for tid in transaction_ids]}},
+            {'$set': {'portfolio_id': portfolio_id}}
+        )
+
+        # Update portfolio holdings
+        update_portfolio_holdings_batch(portfolio_id, transaction_ids)
+
+        return jsonify({
+            'message': f'Successfully assigned {result.modified_count} transactions to portfolio',
+            'modified_count': result.modified_count
+        })
+
+    except Exception as e:
+        logger.error(f"Error in assign_portfolio: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+def update_portfolio_holdings_batch(portfolio_id, transaction_ids):
+    """Update portfolio holdings for multiple transactions"""
+    try:
+        # Fetch all relevant transactions
+        transactions = list(db.transactions.find({
+            '_id': {'$in': [ObjectId(tid) for tid in transaction_ids]}
+        }).sort('date', 1))  # Sort by date to process in chronological order
+
+        # Get current portfolio holdings
+        portfolio = db.portfolios.find_one({'_id': ObjectId(portfolio_id)})
+        if not portfolio:
+            raise ValueError(f"Portfolio not found: {portfolio_id}")
+
+        holdings = portfolio.get('holdings', [])
+        holdings_dict = {h['stock_id']: h for h in holdings}
+
+        # Process each transaction
+        for transaction in transactions:
+            stock_id = transaction['stock_id']
+            quantity = float(transaction['quantity'].to_decimal())
+            price = float(transaction['price'].to_decimal())
+
+            if transaction['transaction_type'] == 'BUY':
+                if stock_id in holdings_dict:
+                    # Update existing holding
+                    holding = holdings_dict[stock_id]
+                    old_quantity = float(holding['quantity'].to_decimal())
+                    old_price = float(holding['purchase_price'].to_decimal())
+                    new_quantity = old_quantity + quantity
+                    # Calculate average purchase price
+                    new_price = ((old_quantity * old_price) + (quantity * price)) / new_quantity
+                    
+                    holding['quantity'] = Decimal128(str(new_quantity))
+                    holding['purchase_price'] = Decimal128(str(new_price))
+                else:
+                    # Add new holding
+                    holdings_dict[stock_id] = {
+                        'stock_id': stock_id,
+                        'quantity': Decimal128(str(quantity)),
+                        'purchase_price': Decimal128(str(price)),
+                        'purchase_date': transaction['date']
+                    }
+            
+            elif transaction['transaction_type'] == 'SELL':
+                if stock_id not in holdings_dict:
+                    raise ValueError(f"No holding found for stock: {stock_id}")
+                
+                holding = holdings_dict[stock_id]
+                old_quantity = float(holding['quantity'].to_decimal())
+                if quantity > old_quantity:
+                    raise ValueError(f"Insufficient quantity for sale. Have: {old_quantity}, Want to sell: {quantity}")
+                
+                new_quantity = old_quantity - quantity
+                if new_quantity == 0:
+                    del holdings_dict[stock_id]
+                else:
+                    holding['quantity'] = Decimal128(str(new_quantity))
+
+        # Update portfolio with new holdings
+        db.portfolios.update_one(
+            {'_id': ObjectId(portfolio_id)},
+            {
+                '$set': {
+                    'holdings': list(holdings_dict.values()),
+                    'updated_at': datetime.now(timezone.utc)
+                }
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error updating portfolio holdings batch: {e}")
+        raise
 
 if __name__ == '__main__':
     logger.info(f"Starting Flask application...")
