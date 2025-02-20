@@ -4,28 +4,66 @@
 
 {% block extra_css %}
 <style>
+    .transactions-container {
+        margin: 20px 0;
+    }
+
+    .filters-section {
+        background: #f8f9fa;
+        padding: 20px;
+        border-radius: 8px;
+        margin-bottom: 20px;
+    }
+
+    .filters-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+    }
+
+    .filter-group {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .filter-group label {
+        margin-bottom: 5px;
+        font-weight: 500;
+    }
+
     .transactions-table {
         width: 100%;
         border-collapse: collapse;
-        margin-top: 20px;
+        background: white;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        border-radius: 8px;
+        overflow: hidden;
     }
 
     .transactions-table th,
     .transactions-table td {
-        padding: 12px;
+        padding: 12px 15px;
         text-align: left;
-        border-bottom: 1px solid #ddd;
+        border-bottom: 1px solid #eee;
     }
 
     .transactions-table th {
         background-color: #f8f9fa;
-        font-weight: bold;
+        font-weight: 600;
+        color: #2c3e50;
+    }
+
+    .transactions-table tr:hover {
+        background-color: #f8f9fa;
     }
 
     .transaction-type {
         padding: 4px 8px;
         border-radius: 4px;
-        font-weight: bold;
+        font-weight: 500;
+        text-align: center;
+        display: inline-block;
+        min-width: 70px;
     }
 
     .transaction-type.buy {
@@ -38,33 +76,118 @@
         color: #d32f2f;
     }
 
-    .actions-bar {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 20px;
+    .status-badge {
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 0.9em;
     }
 
-    .filters {
+    .status-completed {
+        background-color: #e8f5e9;
+        color: #2e7d32;
+    }
+
+    .status-pending {
+        background-color: #fff3e0;
+        color: #ef6c00;
+    }
+
+    .amount {
+        font-family: monospace;
+        text-align: right;
+    }
+
+    .pagination {
+        margin-top: 20px;
         display: flex;
+        justify-content: center;
         gap: 10px;
+    }
+
+    .pagination a {
+        padding: 8px 12px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        text-decoration: none;
+        color: #2c3e50;
+    }
+
+    .pagination a.active {
+        background-color: #3498db;
+        color: white;
+        border-color: #3498db;
+    }
+
+    .actions-column {
+        white-space: nowrap;
+    }
+
+    .btn-group {
+        display: flex;
+        gap: 5px;
+    }
+
+    .btn-small {
+        padding: 4px 8px;
+        font-size: 0.9em;
     }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="dashboard">
-    <div class="actions-bar">
+<div class="transactions-container">
+    <div class="header-section">
         <h1>Transactions</h1>
-        <div class="filters">
-            <select id="portfolioFilter" onchange="filterTransactions()">
-                <option value="">All Portfolios</option>
-                {% for portfolio in portfolios %}
-                <option value="{{ portfolio._id }}">{{ portfolio.name }}</option>
-                {% endfor %}
-            </select>
-            <a href="{{ url_for('new_transaction') }}" class="btn-primary">New Transaction</a>
+        <div class="header-actions">
+            <a href="{{ url_for('new_transaction') }}" class="btn-primary">Add Transaction</a>
+            <a href="{{ url_for('import_transactions') }}" class="btn-secondary">Import Transactions</a>
         </div>
+    </div>
+
+    <div class="filters-section">
+        <form id="filterForm" method="GET">
+            <div class="filters-grid">
+                <div class="filter-group">
+                    <label for="portfolio">Portfolio</label>
+                    <select name="portfolio" id="portfolio">
+                        <option value="">All Portfolios</option>
+                        {% for portfolio in portfolios %}
+                        <option value="{{ portfolio._id }}" {% if request.args.get('portfolio') == portfolio._id|string %}selected{% endif %}>
+                            {{ portfolio.name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="dateRange">Date Range</label>
+                    <select name="dateRange" id="dateRange">
+                        <option value="">All Time</option>
+                        <option value="7" {% if request.args.get('dateRange') == '7' %}selected{% endif %}>Last 7 Days</option>
+                        <option value="30" {% if request.args.get('dateRange') == '30' %}selected{% endif %}>Last 30 Days</option>
+                        <option value="90" {% if request.args.get('dateRange') == '90' %}selected{% endif %}>Last 90 Days</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="type">Type</label>
+                    <select name="type" id="type">
+                        <option value="">All Types</option>
+                        <option value="BUY" {% if request.args.get('type') == 'BUY' %}selected{% endif %}>Buy</option>
+                        <option value="SELL" {% if request.args.get('type') == 'SELL' %}selected{% endif %}>Sell</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="status">Status</label>
+                    <select name="status" id="status">
+                        <option value="">All Status</option>
+                        <option value="COMPLETED" {% if request.args.get('status') == 'COMPLETED' %}selected{% endif %}>Completed</option>
+                        <option value="PENDING" {% if request.args.get('status') == 'PENDING' %}selected{% endif %}>Pending</option>
+                    </select>
+                </div>
+            </div>
+        </form>
     </div>
 
     <table class="transactions-table">
@@ -79,34 +202,75 @@
                 <th>Total Value</th>
                 <th>Broker</th>
                 <th>Status</th>
+                <th>Actions</th>
             </tr>
         </thead>
         <tbody>
             {% for transaction in transactions %}
             <tr>
                 <td>{{ transaction.date.strftime('%Y-%m-%d') }}</td>
-                <td>{{ transaction.portfolio_name }}</td>
-                <td>{{ transaction.stock_name }}</td>
+                <td>{{ transaction.portfolio_name if transaction.portfolio_name else '-' }}</td>
+                <td>{{ transaction.stock_name }} ({{ transaction.stock_symbol }})</td>
                 <td>
                     <span class="transaction-type {{ transaction.transaction_type.lower() }}">
                         {{ transaction.transaction_type }}
                     </span>
                 </td>
-                <td>{{ "%.2f"|format(transaction.quantity) }}</td>
-                <td>{{ "%.2f"|format(transaction.price) }}</td>
-                <td>{{ "%.2f"|format(transaction.quantity * transaction.price) }}</td>
+                <td class="amount">{{ "%.2f"|format(transaction.quantity) }}</td>
+                <td class="amount">₹{{ "%.2f"|format(transaction.price) }}</td>
+                <td class="amount">₹{{ "%.2f"|format(transaction.total_value) }}</td>
                 <td>{{ transaction.broker.name }}</td>
-                <td>{{ transaction.status }}</td>
+                <td>
+                    <span class="status-badge status-{{ transaction.status.lower() }}">
+                        {{ transaction.status }}
+                    </span>
+                </td>
+                <td class="actions-column">
+                    <div class="btn-group">
+                        <button onclick="viewDetails('{{ transaction._id }}')" class="btn-secondary btn-small">View</button>
+                        {% if transaction.status == 'PENDING' %}
+                        <button onclick="assignPortfolio('{{ transaction._id }}')" class="btn-primary btn-small">Assign</button>
+                        {% endif %}
+                    </div>
+                </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+
+    <div class="pagination">
+        {% if page > 1 %}
+        <a href="{{ url_for('list_transactions', page=page-1, **request.args) }}">&laquo; Previous</a>
+        {% endif %}
+        
+        {% for p in range(max(1, page-2), min(total_pages+1, page+3)) %}
+        <a href="{{ url_for('list_transactions', page=p, **request.args) }}" 
+           {% if p == page %}class="active"{% endif %}>
+            {{ p }}
+        </a>
+        {% endfor %}
+        
+        {% if page < total_pages %}
+        <a href="{{ url_for('list_transactions', page=page+1, **request.args) }}">Next &raquo;</a>
+        {% endif %}
+    </div>
 </div>
 
 <script>
-function filterTransactions() {
-    const portfolioId = document.getElementById('portfolioFilter').value;
-    window.location.href = `/transactions?portfolio_id=${portfolioId}`;
+document.querySelectorAll('.filter-group select').forEach(select => {
+    select.addEventListener('change', () => {
+        document.getElementById('filterForm').submit();
+    });
+});
+
+function viewDetails(transactionId) {
+    // Implement view details functionality
+    window.location.href = `/transactions/${transactionId}`;
+}
+
+function assignPortfolio(transactionId) {
+    // Implement portfolio assignment functionality
+    // You might want to show a modal here
 }
 </script>
 {% endblock %} 

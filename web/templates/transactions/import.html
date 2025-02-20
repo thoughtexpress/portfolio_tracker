@@ -7,10 +7,60 @@
     <h1>Import Transactions</h1>
 
     <div class="import-section">
+        <h2>Import from Upstox</h2>
+        <div class="info-box">
+            <p>Use this option for importing transactions from Upstox trade reports.</p>
+            <ul>
+                <li>Supports Upstox's standard CSV format</li>
+                <li>Automatically handles currency formatting</li>
+                <li>Maps Upstox-specific fields correctly</li>
+            </ul>
+        </div>
+        <form id="upstoxImportForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label class="label">Upstox Transaction Report (CSV)</label>
+                <input type="file" id="upstoxFile" accept=".csv" required>
+            </div>
+            <div class="form-group">
+                <label class="label">Portfolio (Optional)</label>
+                <select id="portfolioSelect" name="portfolio_id">
+                    <option value="">-- Select Portfolio --</option>
+                    {% for portfolio in portfolios %}
+                    <option value="{{ portfolio._id }}">{{ portfolio.name }}</option>
+                    {% endfor %}
+                </select>
+                <p class="help-text">
+                    If no portfolio is selected, transactions will be imported as pending and can be assigned later.
+                    They will be stored temporarily until assigned to a portfolio.
+                </p>
+            </div>
+            <div class="form-actions">
+                <button type="button" onclick="importUpstoxTransactions()" class="btn-primary">Import from Upstox</button>
+            </div>
+        </form>
+    </div>
+
+    <hr class="section-divider">
+
+    <div class="import-section">
+        <h2>Import Custom Format</h2>
+        <div class="info-box">
+            <p>Use this option only if you have a CSV file that matches our template format.</p>
+        </div>
         <form id="importForm" enctype="multipart/form-data">
             <div class="form-group">
                 <label class="label">CSV File</label>
                 <input type="file" id="csvFile" accept=".csv" required>
+            </div>
+            <div class="form-group">
+                <label class="label">Portfolio (Optional)</label>
+                <select id="portfolioSelect" name="portfolio_id">
+                    <option value="">-- Select Portfolio --</option>
+                    {% for portfolio in portfolios %}
+                    <option value="{{ portfolio._id }}">{{ portfolio.name }}</option>
+                    {% endfor %}
+                </select>
+                <p class="help-text">If no portfolio is selected, transactions will be imported as pending.</p>
             </div>
             <div class="form-actions">
                 <button type="button" onclick="importTransactions()" class="btn-primary">Import</button>
@@ -39,20 +89,27 @@
             <a href="/static/templates/transactions_template.csv" download class="btn-secondary">Download Template</a>
         </div>
     </div>
-
-    <div class="import-section">
-        <h2>Import from Upstox</h2>
-        <form id="upstoxImportForm" enctype="multipart/form-data">
-            <div class="form-group">
-                <label class="label">Upstox Transaction Report (CSV)</label>
-                <input type="file" id="upstoxFile" accept=".csv" required>
-            </div>
-            <div class="form-actions">
-                <button type="button" onclick="importUpstoxTransactions()" class="btn-primary">Import from Upstox</button>
-            </div>
-        </form>
-    </div>
 </div>
+
+<style>
+.info-box {
+    background-color: #f8f9fa;
+    border-left: 4px solid #3498db;
+    padding: 15px;
+    margin: 15px 0;
+    border-radius: 4px;
+}
+
+.section-divider {
+    margin: 40px 0;
+    border: none;
+    border-top: 1px solid #eee;
+}
+
+.import-section {
+    margin-bottom: 40px;
+}
+</style>
 
 <script>
 async function importTransactions() {
@@ -89,6 +146,7 @@ async function importTransactions() {
 
 async function importUpstoxTransactions() {
     const fileInput = document.getElementById('upstoxFile');
+    const portfolioSelect = document.getElementById('portfolioSelect');
     const file = fileInput.files[0];
     
     if (!file) {
@@ -98,6 +156,9 @@ async function importUpstoxTransactions() {
 
     const formData = new FormData();
     formData.append('file', file);
+    if (portfolioSelect.value) {
+        formData.append('portfolio_id', portfolioSelect.value);
+    }
 
     try {
         const response = await fetch('/transactions/import/upstox', {
@@ -105,16 +166,22 @@ async function importUpstoxTransactions() {
             body: formData
         });
 
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to import transactions');
+        }
+
         const result = await response.json();
 
-        if (response.ok) {
-            alert(`Successfully imported ${result.count} transactions from Upstox!`);
-            window.location.href = '/transactions';
+        if (result.status === 'pending') {
+            alert(`Successfully imported ${result.count} transactions as pending. Please assign them to a portfolio.`);
+            window.location.href = '/transactions?status=pending';
         } else {
-            throw new Error(result.error || 'Failed to import transactions');
+            alert(`Successfully imported ${result.count} transactions!`);
+            window.location.href = '/transactions';
         }
     } catch (error) {
-        console.error('Error importing Upstox transactions:', error);
+        console.error('Error importing transactions:', error);
         alert('Error importing transactions: ' + error.message);
     }
 }

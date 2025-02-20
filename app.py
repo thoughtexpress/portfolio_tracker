@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify, render_template, url_for
 from pymongo import MongoClient
 from bson import ObjectId
 from bson.decimal128 import Decimal128
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 import logging
 import traceback
@@ -12,6 +12,7 @@ import csv
 import io
 import pandas as pd
 import os
+from math import ceil
 
 # Configure logging
 logging.basicConfig(
@@ -372,28 +373,42 @@ def edit_portfolio(portfolio_id):
 
 @app.route('/transactions')
 def list_transactions():
-    """Display all transactions"""
     try:
-        portfolio_id = request.args.get('portfolio_id')
-        
+        # Get filter parameters
+        portfolio_id = request.args.get('portfolio')
+        date_range = request.args.get('dateRange')
+        transaction_type = request.args.get('type')
+        status = request.args.get('status')
+        page = int(request.args.get('page', 1))
+        per_page = 20
+
         # Build query
         query = {}
         if portfolio_id:
             query['portfolio_id'] = portfolio_id
+        if transaction_type:
+            query['transaction_type'] = transaction_type
+        if status:
+            query['status'] = status
+        if date_range:
+            days = int(date_range)
+            query['date'] = {
+                '$gte': datetime.now(timezone.utc) - timedelta(days=days)
+            }
+
+        # Get total count for pagination
+        total_count = db.transactions.count_documents(query)
+        total_pages = ceil(total_count / per_page)
 
         # Fetch transactions with pagination
-        page = int(request.args.get('page', 1))
-        per_page = 20
-        skip = (page - 1) * per_page
-        
         transactions = list(db.transactions.find(query)
                           .sort('date', -1)
-                          .skip(skip)
+                          .skip((page - 1) * per_page)
                           .limit(per_page))
 
         # Fetch related data
         stock_ids = {t['stock_id'] for t in transactions}
-        portfolio_ids = {t['portfolio_id'] for t in transactions}
+        portfolio_ids = {t['portfolio_id'] for t in transactions if t.get('portfolio_id')}
         
         stocks = {str(s['_id']): s for s in db.stocks_collection.find({'_id': {'$in': list(map(ObjectId, stock_ids))}})}
         portfolios = {str(p['_id']): p for p in db.portfolios.find({'_id': {'$in': list(map(ObjectId, portfolio_ids))}})}
@@ -405,16 +420,42 @@ def list_transactions():
             transaction['stock_name'] = stock.get('display_name', 'Unknown Stock')
             transaction['stock_symbol'] = stock.get('identifiers', {}).get('nse_code', '')
             
-            portfolio = portfolios.get(transaction['portfolio_id'], {})
-            transaction['portfolio_name'] = portfolio.get('name', 'Unknown Portfolio')
+            if transaction.get('portfolio_id'):
+                portfolio = portfolios.get(transaction['portfolio_id'], {})
+                transaction['portfolio_name'] = portfolio.get('name', 'Unknown Portfolio')
 
-        return render_template('transactions/list.html', 
-                            transactions=transactions,
-                            current_page=page)
+            # Convert Decimal128 to float for template rendering
+            transaction['quantity'] = float(transaction['quantity'].to_decimal())
+            transaction['price'] = float(transaction['price'].to_decimal())
+            transaction['total_value'] = transaction['quantity'] * transaction['price']
+
+            # Convert charges if they exist
+            if 'charges' in transaction:
+                charges = transaction['charges']
+                transaction['charges'] = {
+                    'brokerage': float(charges.get('brokerage', Decimal128('0')).to_decimal()),
+                    'gst': float(charges.get('gst', Decimal128('0')).to_decimal()),
+                    'stt': float(charges.get('stt', Decimal128('0')).to_decimal()),
+                    'stamp_duty': float(charges.get('stamp_duty', Decimal128('0')).to_decimal()),
+                    'exchange_charges': float(charges.get('exchange_charges', Decimal128('0')).to_decimal()),
+                    'sebi_charges': float(charges.get('sebi_charges', Decimal128('0')).to_decimal())
+                }
+
+        # Get all portfolios for filter dropdown
+        all_portfolios = list(db.portfolios.find({}, {'name': 1}))
+
+        return render_template('transactions/list.html',
+                             transactions=transactions,
+                             portfolios=all_portfolios,
+                             page=page,
+                             total_pages=total_pages,
+                             max=max,
+                             min=min)
 
     except Exception as e:
         logger.error(f"Error in list_transactions: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Failed to load transactions'}), 500
 
 @app.route('/transactions/new', methods=['GET', 'POST'])
 def new_transaction():
@@ -581,173 +622,99 @@ class TransactionManager:
             
         return list(db.transactions.find(query).sort('date', -1))
 
-@app.route('/transactions/import', methods=['GET', 'POST'])
-def import_transactions():
-    """Import transactions from CSV"""
+@app.route('/transactions/import/upstox', methods=['POST'])
+def import_upstox_transactions():
+    """Import transactions from Upstox CSV"""
     try:
-        if request.method == 'POST':
-            if 'file' not in request.files:
-                return jsonify({'error': 'No file provided'}), 400
-                
-            csv_file = request.files['file']
-            if csv_file.filename == '':
-                return jsonify({'error': 'No file selected'}), 400
-
-            if not csv_file.filename.endswith('.csv'):
-                return jsonify({'error': 'File must be a CSV'}), 400
-
-            # Read and parse CSV
-            stream = io.StringIO(csv_file.stream.read().decode("UTF8"), newline=None)
-            csv_reader = csv.DictReader(stream)
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
             
-            transactions = []
-            for row in csv_reader:
-                try:
-                    transaction = {
-                        'stock_id': row['stock_id'],
-                        'transaction_type': row['transaction_type'].upper(),
-                        'quantity': Decimal128(str(row['quantity'])),
-                        'price': Decimal128(str(row['price'])),
-                        'date': datetime.strptime(row['date'], '%Y-%m-%d').replace(tzinfo=timezone.utc),
-                        'broker': {
-                            'name': row['broker_name'],
-                            'transaction_id': row.get('broker_transaction_id', '')
-                        },
-                        'status': 'COMPLETED',
-                        'charges': {
-                            'brokerage': Decimal128(str(row.get('brokerage', 0))),
-                            'gst': Decimal128(str(row.get('gst', 0))),
-                            'stt': Decimal128(str(row.get('stt', 0))),
-                            'stamp_duty': Decimal128(str(row.get('stamp_duty', 0))),
-                            'exchange_charges': Decimal128(str(row.get('exchange_charges', 0))),
-                            'sebi_charges': Decimal128(str(row.get('sebi_charges', 0)))
-                        },
-                        'created_at': datetime.now(timezone.utc),
-                        'updated_at': datetime.now(timezone.utc)
-                    }
-                    transactions.append(transaction)
-                except Exception as e:
-                    logger.error(f"Error processing row: {row}. Error: {e}")
-                    return jsonify({'error': f'Error in row: {row}. {str(e)}'}), 400
+        file = request.files['file']
+        portfolio_id = request.form.get('portfolio_id')  # Get portfolio_id if provided
+        
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
 
-            # Insert transactions
-            result = db.transactions.insert_many(transactions)
-            
+        if not file.filename.endswith('.csv'):
+            return jsonify({'error': 'File must be a CSV'}), 400
+
+        # Create upload folder if it doesn't exist
+        upload_folder = os.path.join(app.root_path, 'uploads')
+        if not os.path.exists(upload_folder):
+            os.makedirs(upload_folder)
+
+        # Save file temporarily
+        temp_path = os.path.join(upload_folder, secure_filename(file.filename))
+        file.save(temp_path)
+
+        try:
+            # Import transactions
+            importer = UpstoxTransactionImporter(db)
+            count = importer.import_transactions(temp_path, portfolio_id)
+
             return jsonify({
-                'message': f'Successfully imported {len(result.inserted_ids)} transactions',
-                'transaction_ids': [str(id) for id in result.inserted_ids]
+                'message': f'Successfully imported {count} transactions',
+                'count': count,
+                'status': 'pending' if not portfolio_id else 'completed'
             })
-
-        # GET request - render import form
-        return render_template('transactions/import.html')
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     except Exception as e:
-        logger.error(f"Error in import_transactions: {e}")
+        logger.error(f"Error in import_upstox_transactions: {e}")
         logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+# Update the import template route to include portfolios
+@app.route('/transactions/import', methods=['GET'])
+def import_transactions():
+    """Render import page"""
+    try:
+        portfolios = list(db.portfolios.find({}, {'name': 1}))
+        return render_template('transactions/import.html', portfolios=portfolios)
+    except Exception as e:
+        logger.error(f"Error rendering import page: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/transactions/assign-portfolio', methods=['POST'])
 def assign_portfolio():
-    """Assign transactions to a portfolio"""
     try:
         data = request.json
-        transaction_ids = data.get('transaction_ids', [])
         portfolio_id = data.get('portfolio_id')
+        transaction_ids = data.get('transaction_ids', [])
 
-        if not transaction_ids or not portfolio_id:
-            return jsonify({'error': 'Missing required fields'}), 400
+        if not portfolio_id or not transaction_ids:
+            return jsonify({'error': 'Portfolio ID and transaction IDs are required'}), 400
 
-        # Update transactions with portfolio ID
-        result = db.transactions.update_many(
-            {'_id': {'$in': [ObjectId(tid) for tid in transaction_ids]}},
-            {'$set': {'portfolio_id': portfolio_id}}
-        )
+        # Move transactions from temp collection to main collection
+        temp_transactions = list(db.temp_transactions.find({
+            'id': {'$in': transaction_ids}
+        }))
 
-        # Update portfolio holdings
-        update_portfolio_holdings_batch(portfolio_id, transaction_ids)
+        for transaction in temp_transactions:
+            transaction['portfolio_id'] = portfolio_id
+            transaction['status'] = 'COMPLETED'
+            transaction['updated_at'] = datetime.now(timezone.utc)
+            
+            # Remove _id before insertion
+            transaction.pop('_id', None)
+            
+            # Insert into main transactions collection
+            db.transactions.insert_one(transaction)
+            
+            # Remove from temp collection
+            db.temp_transactions.delete_one({'id': transaction['id']})
 
         return jsonify({
-            'message': f'Successfully assigned {result.modified_count} transactions to portfolio',
-            'modified_count': result.modified_count
+            'message': f'Successfully assigned {len(transaction_ids)} transactions to portfolio',
+            'count': len(transaction_ids)
         })
 
     except Exception as e:
         logger.error(f"Error in assign_portfolio: {e}")
-        logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
-
-def update_portfolio_holdings_batch(portfolio_id, transaction_ids):
-    """Update portfolio holdings for multiple transactions"""
-    try:
-        # Fetch all relevant transactions
-        transactions = list(db.transactions.find({
-            '_id': {'$in': [ObjectId(tid) for tid in transaction_ids]}
-        }).sort('date', 1))  # Sort by date to process in chronological order
-
-        # Get current portfolio holdings
-        portfolio = db.portfolios.find_one({'_id': ObjectId(portfolio_id)})
-        if not portfolio:
-            raise ValueError(f"Portfolio not found: {portfolio_id}")
-
-        holdings = portfolio.get('holdings', [])
-        holdings_dict = {h['stock_id']: h for h in holdings}
-
-        # Process each transaction
-        for transaction in transactions:
-            stock_id = transaction['stock_id']
-            quantity = float(transaction['quantity'].to_decimal())
-            price = float(transaction['price'].to_decimal())
-
-            if transaction['transaction_type'] == 'BUY':
-                if stock_id in holdings_dict:
-                    # Update existing holding
-                    holding = holdings_dict[stock_id]
-                    old_quantity = float(holding['quantity'].to_decimal())
-                    old_price = float(holding['purchase_price'].to_decimal())
-                    new_quantity = old_quantity + quantity
-                    # Calculate average purchase price
-                    new_price = ((old_quantity * old_price) + (quantity * price)) / new_quantity
-                    
-                    holding['quantity'] = Decimal128(str(new_quantity))
-                    holding['purchase_price'] = Decimal128(str(new_price))
-                else:
-                    # Add new holding
-                    holdings_dict[stock_id] = {
-                        'stock_id': stock_id,
-                        'quantity': Decimal128(str(quantity)),
-                        'purchase_price': Decimal128(str(price)),
-                        'purchase_date': transaction['date']
-                    }
-            
-            elif transaction['transaction_type'] == 'SELL':
-                if stock_id not in holdings_dict:
-                    raise ValueError(f"No holding found for stock: {stock_id}")
-                
-                holding = holdings_dict[stock_id]
-                old_quantity = float(holding['quantity'].to_decimal())
-                if quantity > old_quantity:
-                    raise ValueError(f"Insufficient quantity for sale. Have: {old_quantity}, Want to sell: {quantity}")
-                
-                new_quantity = old_quantity - quantity
-                if new_quantity == 0:
-                    del holdings_dict[stock_id]
-                else:
-                    holding['quantity'] = Decimal128(str(new_quantity))
-
-        # Update portfolio with new holdings
-        db.portfolios.update_one(
-            {'_id': ObjectId(portfolio_id)},
-            {
-                '$set': {
-                    'holdings': list(holdings_dict.values()),
-                    'updated_at': datetime.now(timezone.utc)
-                }
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"Error updating portfolio holdings batch: {e}")
-        raise
 
 @app.route('/brokers', methods=['GET', 'POST'])
 def manage_brokers():
@@ -796,10 +763,11 @@ class UpstoxTransactionImporter:
 
     def clean_amount(self, amount):
         if isinstance(amount, str):
+            # Remove the '?' symbol and commas, then convert to float
             return float(amount.replace('?', '').replace(',', ''))
         return float(amount)
 
-    def import_transactions(self, file_path):
+    def import_transactions(self, file_path, portfolio_id=None):
         try:
             # Read CSV file
             df = pd.read_csv(file_path)
@@ -807,40 +775,70 @@ class UpstoxTransactionImporter:
             # Clean and transform data
             transactions = []
             for _, row in df.iterrows():
-                # Clean monetary values
-                price = self.clean_amount(row['Price'])
-                amount = self.clean_amount(row['Amount'])
-                quantity = float(row['Quantity'])
-                
-                # Get or create stock
-                stock = self.get_or_create_stock(row['Company'], row['Scrip Code'])
-                
-                transaction = {
-                    'stock_id': str(stock['_id']),
-                    'transaction_type': 'BUY' if row['Side'] == 'Buy' else 'SELL',
-                    'quantity': Decimal128(str(quantity)),
-                    'price': Decimal128(str(price)),
-                    'date': datetime.strptime(row['Date'], '%d-%m-%Y').replace(tzinfo=timezone.utc),
-                    'broker': {
-                        'name': 'UPSTOX',
-                        'transaction_id': str(row['Trade Num'])
-                    },
-                    'exchange': row['Exchange'],
-                    'segment': row['Segment'],
-                    'instrument_type': row['Instrument Type'],
-                    'trade_time': datetime.strptime(f"{row['Date']} {row['Trade Time']}", 
-                                                  '%d-%m-%Y %H:%M:%S').replace(tzinfo=timezone.utc),
-                    'status': 'COMPLETED',
-                    'charges': self.calculate_charges(amount),
-                    'created_at': datetime.now(timezone.utc),
-                    'updated_at': datetime.now(timezone.utc)
-                }
-                transactions.append(transaction)
+                try:
+                    # Clean monetary values
+                    price = self.clean_amount(row['Price'])
+                    amount = self.clean_amount(row['Amount'])
+                    quantity = float(row['Quantity'])
+                    
+                    # Get or create stock
+                    stock = self.get_or_create_stock(row['Company'], row['Scrip Code'])
+                    
+                    if not stock:
+                        logger.error(f"Failed to process stock: {row['Company']} ({row['Scrip Code']})")
+                        continue
+
+                    transaction = {
+                        'id': str(ObjectId()),
+                        'portfolio_id': portfolio_id,  # Can be None initially
+                        'stock_id': str(stock['_id']),
+                        'transaction_type': 'BUY' if row['Side'].upper() == 'BUY' else 'SELL',
+                        'quantity': Decimal128(str(quantity)),
+                        'price': Decimal128(str(price)),
+                        'date': datetime.strptime(row['Date'], '%d-%m-%Y').replace(tzinfo=timezone.utc),
+                        'broker': {
+                            'name': 'UPSTOX',
+                            'transaction_id': str(row['Trade Num'])
+                        },
+                        'metadata': {
+                            'exchange': row['Exchange'],
+                            'segment': row['Segment'],
+                            'instrument_type': row['Instrument Type'],
+                            'trade_time': datetime.strptime(f"{row['Date']} {row['Trade Time']}", 
+                                                          '%d-%m-%Y %H:%M:%S').replace(tzinfo=timezone.utc),
+                        },
+                        'status': 'PENDING' if not portfolio_id else 'COMPLETED',  # Mark as pending if no portfolio
+                        'charges': self.calculate_charges(amount),
+                        'created_at': datetime.now(timezone.utc),
+                        'updated_at': datetime.now(timezone.utc)
+                    }
+                    transactions.append(transaction)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing row: {row}. Error: {str(e)}")
+                    continue
             
             # Insert transactions
             if transactions:
-                result = self.db.transactions.insert_many(transactions)
-                return len(result.inserted_ids)
+                # Create a temporary collection for unassigned transactions if no portfolio_id
+                if not portfolio_id:
+                    temp_collection = self.db.create_collection(
+                        'temp_transactions',
+                        validator={
+                            '$jsonSchema': {
+                                'bsonType': 'object',
+                                'required': ['id', 'stock_id', 'transaction_type', 'quantity', 'price', 'date', 'broker', 'status', 'created_at', 'updated_at'],
+                                'properties': {
+                                    # ... (same as transactions collection but without portfolio_id requirement)
+                                }
+                            }
+                        }
+                    )
+                    result = temp_collection.insert_many(transactions)
+                    return len(result.inserted_ids)
+                else:
+                    result = self.db.transactions.insert_many(transactions)
+                    return len(result.inserted_ids)
             return 0
             
         except Exception as e:
@@ -848,31 +846,76 @@ class UpstoxTransactionImporter:
             raise
 
     def get_or_create_stock(self, company_name, scrip_code):
-        # Try to find existing stock
-        stock = self.db.stocks_collection.find_one({
-            'identifiers.nse_code': scrip_code
-        })
-        
-        if stock:
-            return stock
+        try:
+            # Clean scrip code
+            scrip_code = str(scrip_code).strip()
             
-        # Create new stock if not found
-        new_stock = {
-            'display_name': company_name,
-            'identifiers': {
-                'nse_code': scrip_code
-            },
-            'created_at': datetime.now(timezone.utc),
-            'updated_at': datetime.now(timezone.utc)
-        }
-        
-        result = self.db.stocks_collection.insert_one(new_stock)
-        return self.db.stocks_collection.find_one({'_id': result.inserted_id})
+            # Try to find existing stock
+            stock = self.db.stocks_collection.find_one({
+                '$or': [
+                    {'identifiers.nse_code': scrip_code},
+                    {'identifiers.bse_code': scrip_code}
+                ]
+            })
+            
+            if stock:
+                return stock
+                
+            # Create new stock if not found
+            new_stock = {
+                'display_name': company_name.strip(),
+                'identifiers': {
+                    'nse_code': scrip_code if 'NSE' in self.get_stock_exchanges(scrip_code) else None,
+                    'bse_code': scrip_code if 'BSE' in self.get_stock_exchanges(scrip_code) else None
+                },
+                'status': 'ACTIVE',
+                'created_at': datetime.now(timezone.utc),
+                'updated_at': datetime.now(timezone.utc)
+            }
+            
+            result = self.db.stocks_collection.insert_one(new_stock)
+            return self.db.stocks_collection.find_one({'_id': result.inserted_id})
+
+        except Exception as e:
+            logger.error(f"Error in get_or_create_stock: {e}")
+            return None
+
+    def get_stock_exchanges(self, scrip_code):
+        """Determine which exchanges this scrip code belongs to"""
+        exchanges = []
+        # Add logic to determine exchange based on scrip code format
+        # This is a simplified version - you might want to enhance this
+        if len(str(scrip_code)) == 6:  # NSE usually has 6-digit codes
+            exchanges.append('NSE')
+        return exchanges
 
     def calculate_charges(self, amount):
-        # Get Upstox charge structure
-        broker = self.db.brokers.find_one({'name': 'UPSTOX'})
-        if not broker:
+        try:
+            # Get Upstox charge structure
+            broker = self.db.brokers.find_one({'name': 'UPSTOX'})
+            if not broker:
+                # Default charges if broker not found
+                return {
+                    'brokerage': Decimal128('0'),
+                    'gst': Decimal128('0'),
+                    'stt': Decimal128('0'),
+                    'stamp_duty': Decimal128('0'),
+                    'exchange_charges': Decimal128('0'),
+                    'sebi_charges': Decimal128('0')
+                }
+                
+            structure = broker['charge_structure']
+            return {
+                'brokerage': Decimal128(str(amount * float(structure['brokerage_percentage'].to_decimal()))),
+                'gst': Decimal128(str(amount * float(structure['gst_percentage'].to_decimal()))),
+                'stt': Decimal128(str(amount * float(structure['stt_percentage'].to_decimal()))),
+                'stamp_duty': Decimal128(str(amount * float(structure['stamp_duty_percentage'].to_decimal()))),
+                'exchange_charges': Decimal128(str(amount * float(structure['exchange_charges_percentage'].to_decimal()))),
+                'sebi_charges': Decimal128(str(amount * float(structure['sebi_charges_percentage'].to_decimal())))
+            }
+        except Exception as e:
+            logger.error(f"Error calculating charges: {e}")
+            # Return zero charges in case of error
             return {
                 'brokerage': Decimal128('0'),
                 'gst': Decimal128('0'),
@@ -881,50 +924,6 @@ class UpstoxTransactionImporter:
                 'exchange_charges': Decimal128('0'),
                 'sebi_charges': Decimal128('0')
             }
-            
-        structure = broker['charge_structure']
-        return {
-            'brokerage': Decimal128(str(amount * float(structure['brokerage_percentage'].to_decimal()))),
-            'gst': Decimal128(str(amount * float(structure['gst_percentage'].to_decimal()))),
-            'stt': Decimal128(str(amount * float(structure['stt_percentage'].to_decimal()))),
-            'stamp_duty': Decimal128(str(amount * float(structure['stamp_duty_percentage'].to_decimal()))),
-            'exchange_charges': Decimal128(str(amount * float(structure['exchange_charges_percentage'].to_decimal()))),
-            'sebi_charges': Decimal128(str(amount * float(structure['sebi_charges_percentage'].to_decimal())))
-        }
-
-# Add this route to handle Upstox file uploads
-@app.route('/transactions/import/upstox', methods=['POST'])
-def import_upstox_transactions():
-    try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
-            
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
-
-        if not file.filename.endswith('.csv'):
-            return jsonify({'error': 'File must be a CSV'}), 400
-
-        # Save file temporarily
-        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(file.filename))
-        file.save(temp_path)
-
-        # Import transactions
-        importer = UpstoxTransactionImporter(db)
-        count = importer.import_transactions(temp_path)
-
-        # Clean up
-        os.remove(temp_path)
-
-        return jsonify({
-            'message': f'Successfully imported {count} transactions',
-            'count': count
-        })
-
-    except Exception as e:
-        logger.error(f"Error importing Upstox transactions: {e}")
-        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     logger.info(f"Starting Flask application...")
