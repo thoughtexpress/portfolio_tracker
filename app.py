@@ -14,6 +14,8 @@ import pandas as pd
 import os
 from math import ceil
 from fuzzywuzzy import fuzz
+from bson.json_util import dumps, loads
+import json
 
 # Configure logging
 logging.basicConfig(
@@ -22,12 +24,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize Flask with correct template and static paths
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Decimal128):
+            return float(obj.to_decimal())
+        if isinstance(obj, ObjectId):
+            return str(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
+# Initialize Flask
 app = Flask(__name__, 
-    template_folder='web/templates',
-    static_folder='web/static',
-    static_url_path='/static'
-)
+           template_folder='web/templates',
+           static_folder='web/static')
+
+# Set the custom JSON encoder
+app.json_encoder = CustomJSONEncoder
 
 # MongoDB connection
 MONGODB_URL = "mongodb://localhost:27017"
@@ -542,6 +555,11 @@ class PortfolioManager:
             if not portfolio:
                 raise ValueError(f"Portfolio not found: {portfolio_id}")
 
+            # Fetch stock details first
+            stock = self.db.stocks_collection.find_one({'_id': ObjectId(transaction['stock_id'])})
+            if not stock:
+                raise ValueError(f"Stock not found: {transaction['stock_id']}")
+
             holdings = portfolio.get('holdings', [])
             stock_id = transaction['stock_id']
             quantity = float(transaction['quantity'].to_decimal())
@@ -567,16 +585,20 @@ class PortfolioManager:
                         'quantity': Decimal128(str(new_quantity)),
                         'average_price': Decimal128(str(new_avg_price)),
                         'last_transaction_date': transaction_date,
-                        'updated_at': datetime.now(timezone.utc)
+                        'updated_at': datetime.now(timezone.utc),
+                        'stock_name': stock['display_name'],  # Add stock details
+                        'stock_symbol': stock.get('identifiers', {}).get('nse_code', '')
                     })
                 else:
                     # Create new holding
                     holdings.append({
                         'stock_id': stock_id,
+                        'stock_name': stock['display_name'],  # Add stock details
+                        'stock_symbol': stock.get('identifiers', {}).get('nse_code', ''),
                         'quantity': Decimal128(str(quantity)),
                         'average_price': Decimal128(str(price)),
-                        'purchase_price': Decimal128(str(price)),  # Added for schema validation
-                        'purchase_date': transaction_date,  # Added for schema validation
+                        'purchase_price': Decimal128(str(price)),
+                        'purchase_date': transaction_date,
                         'last_transaction_date': transaction_date,
                         'created_at': datetime.now(timezone.utc),
                         'updated_at': datetime.now(timezone.utc)
@@ -584,24 +606,36 @@ class PortfolioManager:
             
             elif transaction['transaction_type'] == 'SELL':
                 if not existing_holding:
-                    raise ValueError(f"Cannot sell stock {stock_id} - no existing holding found")
-                
-                current_quantity = float(existing_holding['quantity'].to_decimal())
-                new_quantity = current_quantity - quantity
-                
-                if new_quantity < 0:
-                    raise ValueError(f"Insufficient quantity for sale. Available: {current_quantity}, Required: {quantity}")
-                
-                if new_quantity == 0:
-                    # Remove holding if quantity becomes zero
-                    holdings = [h for h in holdings if h['stock_id'] != stock_id]
-                else:
-                    # Update existing holding
-                    existing_holding.update({
-                        'quantity': Decimal128(str(new_quantity)),
+                    # For first-time sells, create a holding with negative quantity
+                    holdings.append({
+                        'stock_id': stock_id,
+                        'stock_name': stock['display_name'],  # Add stock details
+                        'stock_symbol': stock.get('identifiers', {}).get('nse_code', ''),
+                        'quantity': Decimal128(str(-quantity)),
+                        'average_price': Decimal128(str(price)),
+                        'purchase_price': Decimal128(str(price)),
+                        'purchase_date': transaction_date,
                         'last_transaction_date': transaction_date,
-                        'updated_at': datetime.now(timezone.utc)
+                        'created_at': datetime.now(timezone.utc),
+                        'updated_at': datetime.now(timezone.utc),
+                        'notes': 'Historical position - started tracking with sell transaction'
                     })
+                else:
+                    current_quantity = float(existing_holding['quantity'].to_decimal())
+                    new_quantity = current_quantity - quantity
+                    
+                    if new_quantity == 0:
+                        # Remove holding if quantity becomes zero
+                        holdings = [h for h in holdings if h['stock_id'] != stock_id]
+                    else:
+                        # Update existing holding
+                        existing_holding.update({
+                            'quantity': Decimal128(str(new_quantity)),
+                            'last_transaction_date': transaction_date,
+                            'updated_at': datetime.now(timezone.utc),
+                            'stock_name': stock['display_name'],  # Add stock details
+                            'stock_symbol': stock.get('identifiers', {}).get('nse_code', '')
+                        })
 
             # Update portfolio
             self.db.portfolios.update_one(
@@ -635,9 +669,15 @@ class PortfolioManager:
             logger.error(f"Error processing transaction: {e}")
             raise
 
+def clean_price(price_str):
+    """Clean price string by removing '?' and commas"""
+    if isinstance(price_str, str):
+        # Remove the '?' symbol and commas
+        return float(price_str.replace('?', '').replace(',', ''))
+    return float(price_str)
+
 @app.route('/transactions/import/upstox', methods=['POST'])
 def import_upstox_transactions():
-    """Import transactions from Upstox CSV"""
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
@@ -648,36 +688,104 @@ def import_upstox_transactions():
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
 
-        if not file.filename.endswith('.csv'):
-            return jsonify({'error': 'File must be a CSV'}), 400
+        # Handle both CSV and Excel files
+        if file.filename.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(file)
+        elif file.filename.endswith('.csv'):
+            file_content = file.read().decode('utf-8')
+            df = pd.read_csv(io.StringIO(file_content))
+        else:
+            return jsonify({'error': 'File must be CSV or Excel'}), 400
 
-        # Create upload folder if it doesn't exist
-        upload_folder = os.path.join(app.root_path, 'uploads')
-        if not os.path.exists(upload_folder):
-            os.makedirs(upload_folder)
+        # Convert DataFrame to list of transactions
+        transactions = []
+        for _, row in df.iterrows():
+            try:
+                transaction = {
+                    'company_name': str(row['Company']),
+                    'scrip_code': str(row['Scrip Code']),
+                    'transaction_type': 'BUY' if str(row['Side']).upper() == 'BUY' else 'SELL',
+                    'quantity': float(row['Quantity']),
+                    'price': clean_price(row['Price']),
+                    'date': datetime.strptime(str(row['Date']), '%d-%m-%Y').replace(tzinfo=timezone.utc),
+                    'broker_transaction_id': str(row['Trade Num'])
+                }
+                transactions.append(transaction)
+            except Exception as e:
+                logger.error(f"Error processing row: {row}")
+                logger.error(f"Error details: {e}")
+                continue
 
-        # Save file temporarily
-        temp_path = os.path.join(upload_folder, secure_filename(file.filename))
-        file.save(temp_path)
+        if not transactions:
+            return jsonify({'error': 'No valid transactions found in file'}), 400
 
-        try:
-            # Import transactions
-            importer = UpstoxTransactionImporter(db)
-            results = importer.import_transactions(temp_path, portfolio_id)
+        # Store all transactions in temp collection first
+        transaction_ids = []
+        for transaction in transactions:
+            # Create a complete transaction document that satisfies the schema
+            temp_transaction = {
+                'id': str(ObjectId()),
+                'company_name': transaction['company_name'],
+                'scrip_code': transaction['scrip_code'],
+                'transaction_type': transaction['transaction_type'],
+                'quantity': transaction['quantity'],
+                'price': transaction['price'],
+                'date': transaction['date'],
+                'broker': {
+                    'name': 'UPSTOX',
+                    'transaction_id': transaction.get('broker_transaction_id', '')
+                },
+                'status': 'PENDING',
+                'created_at': datetime.now(timezone.utc),
+                'updated_at': datetime.now(timezone.utc),
+                'stock_id': None  # Will be updated after mapping
+            }
             
-            return jsonify(results)
+            db.temp_transactions.insert_one(temp_transaction)
+            transaction_ids.append(temp_transaction['id'])
 
-        finally:
-            # Clean up temporary file
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+        # Process and find potential matches
+        importer = UpstoxTransactionImporter(db)
+        validation_results = importer.validate_transactions(transactions)
+        
+        # Always show mapping page for verification
+        unmatched_data = []
+        for item in validation_results.get('unmatched', []) + validation_results.get('valid', []):
+            if isinstance(item, dict):
+                transaction = item.get('transaction', {})
+                potential_matches = item.get('potential_matches', [])
+                if transaction:
+                    unmatched_data.append({
+                        'transaction': transaction,
+                        'potential_matches': potential_matches or []  # Ensure list exists
+                    })
 
+        # Return JSON response for AJAX request
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return jsonify({
+                'success': True,
+                'redirect': url_for('view_stock_mapping',  # Updated function name
+                                  transaction_ids=transaction_ids,
+                                  portfolio_id=portfolio_id)
+            })
+        
+        # Regular form submit - return template
+        return render_template(
+            'transactions/map_stocks.html',
+            unmatched_transactions=unmatched_data,
+            transaction_ids=transaction_ids,
+            portfolio_id=portfolio_id,
+            total_transactions=len(transactions),
+            unmatched_count=len(unmatched_data)
+        )
+        
     except Exception as e:
-        logger.error(f"Error in import_upstox_transactions: {e}")
+        logger.error(f"Error importing transactions: {e}")
         logger.error(traceback.format_exc())
-        return jsonify({'error': str(e)}), 500
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return jsonify({'error': str(e)}), 500
+        return render_template('error.html', error=str(e)), 500
 
-# Update the import template route to include portfolios
 @app.route('/transactions/import', methods=['GET'])
 def import_transactions():
     """Render import page"""
@@ -789,13 +897,15 @@ class UpstoxTransactionImporter:
         """Clean company name for better matching"""
         # Common replacements
         replacements = {
-            'LIMITED': 'LTD',
-            'LTD.': 'LTD',
-            'INDUSTRIES': 'IND',
-            'INDUSTRY': 'IND',
+            ' LIMITED': ' LTD',
+            ' LTD.': ' LTD',
+            ' INDUSTRIES': ' IND',
+            ' INDUSTRY': ' IND',
             '&': 'AND',
             '.': '',
             ',': '',
+            '-': ' ',
+            '  ': ' '  # Remove double spaces
         }
         
         # Convert to uppercase and remove extra spaces
@@ -805,22 +915,25 @@ class UpstoxTransactionImporter:
         for old, new in replacements.items():
             name = name.replace(old, new)
         
-        # Remove common suffixes
-        suffixes = [' LTD', ' LIMITED', ' IND']
+        # Remove common suffixes if they exist as whole words
+        suffixes = [' LTD', ' LIMITED', ' IND', ' INDUSTRIES', ' PRIVATE', ' PVT']
         for suffix in suffixes:
             if name.endswith(suffix):
                 name = name[:-len(suffix)]
         
-        # Remove extra whitespace
+        # Remove extra whitespace and return
         return ' '.join(name.split())
 
     def find_matching_stock(self, company_name, scrip_code):
         """Find matching stock using multiple criteria"""
         try:
+            logger.info(f"Searching for stock: {company_name} ({scrip_code})")
+            
             # Clean the input company name
             cleaned_company = self.clean_company_name(company_name)
+            logger.info(f"Cleaned company name: {cleaned_company}")
             
-            # Try exact matches first
+            # Try exact matches first with scrip code
             stock = self.db.stocks_collection.find_one({
                 '$or': [
                     {'identifiers.nse_code': scrip_code},
@@ -832,105 +945,135 @@ class UpstoxTransactionImporter:
                 logger.info(f"Found stock by scrip code: {scrip_code}")
                 return stock
 
-            # Get all stocks and try different matching strategies
-            stocks = list(self.db.stocks_collection.find({}))
+            # Get all stocks for fuzzy matching
+            stocks = list(self.db.stocks_collection.find())
             best_match = None
             highest_ratio = 0
             
             for stock in stocks:
                 # Clean the database stock name
-                db_name_clean = self.clean_company_name(stock['display_name'])
+                db_name = stock.get('display_name', '')
+                db_name_clean = self.clean_company_name(db_name)
                 
                 # Try different matching techniques
                 ratios = [
-                    fuzz.ratio(cleaned_company, db_name_clean),  # Simple ratio
-                    fuzz.partial_ratio(cleaned_company, db_name_clean),  # Partial ratio
-                    fuzz.token_sort_ratio(cleaned_company, db_name_clean),  # Token sort ratio
-                    fuzz.token_set_ratio(cleaned_company, db_name_clean)  # Token set ratio
+                    fuzz.ratio(cleaned_company, db_name_clean),
+                    fuzz.partial_ratio(cleaned_company, db_name_clean),
+                    fuzz.token_sort_ratio(cleaned_company, db_name_clean),
+                    fuzz.token_set_ratio(cleaned_company, db_name_clean)
                 ]
                 
                 # Get the highest ratio from all matching techniques
                 max_ratio = max(ratios)
                 
+                # Log matching attempts for debugging
+                logger.debug(f"Matching '{cleaned_company}' with '{db_name_clean}': {max_ratio}")
+                
                 if max_ratio > highest_ratio:
                     highest_ratio = max_ratio
                     best_match = stock
-
-                # Log matching attempts for debugging
-                logger.debug(f"Matching '{company_name}' with '{stock['display_name']}': {max_ratio}")
+                    logger.info(f"New best match: '{db_name}' with ratio {max_ratio}")
 
             # Use a threshold of 80 for matching
             if highest_ratio >= 80:
-                logger.info(f"Found fuzzy match for '{company_name}': '{best_match['display_name']}' with ratio {highest_ratio}")
+                logger.info(f"Found fuzzy match: '{best_match['display_name']}' with ratio {highest_ratio}")
                 return best_match
             
             # If no match found, log the failure
             logger.warning(f"No match found for '{company_name}' (cleaned: '{cleaned_company}')")
-            return None
+            
+            # Instead of returning None, raise an exception
+            raise ValueError(f"No matching stock found for {company_name} ({scrip_code})")
 
         except Exception as e:
             logger.error(f"Error in find_matching_stock: {e}")
             raise
 
-    def create_name_variations(self, name):
-        """Create common variations of company names"""
-        variations = {name}
-        
-        # Add variation without 'LIMITED'/'LTD'
-        for suffix in [' LIMITED', ' LTD', ' LTD.']:
-            if name.upper().endswith(suffix):
-                variations.add(name[:-len(suffix)])
-        
-        # Add variations with '&' and 'AND'
-        if ' & ' in name:
-            variations.add(name.replace(' & ', ' AND '))
-        if ' AND ' in name:
-            variations.add(name.replace(' AND ', ' & '))
-        
-        # Add variations with 'INDUSTRIES' and 'IND'
-        if ' INDUSTRIES ' in name.upper():
-            variations.add(name.upper().replace(' INDUSTRIES ', ' IND '))
-        if ' IND ' in name.upper():
-            variations.add(name.upper().replace(' IND ', ' INDUSTRIES '))
-        
-        return variations
+    def find_potential_matches(self, company_name, scrip_code, limit=5):
+        """Find potential stock matches and return them sorted by match score"""
+        try:
+            cleaned_company = self.clean_company_name(company_name)
+            potential_matches = []
+            
+            # Get all stocks
+            stocks = list(self.db.stocks_collection.find())
+            
+            for stock in stocks:
+                db_name = stock.get('display_name', '')
+                db_name_clean = self.clean_company_name(db_name)
+                
+                # Calculate different match ratios
+                ratios = {
+                    'ratio': fuzz.ratio(cleaned_company, db_name_clean),
+                    'partial': fuzz.partial_ratio(cleaned_company, db_name_clean),
+                    'sort': fuzz.token_sort_ratio(cleaned_company, db_name_clean),
+                    'set': fuzz.token_set_ratio(cleaned_company, db_name_clean)
+                }
+                
+                # Get the highest ratio
+                max_ratio = max(ratios.values())
+                
+                # If ratio is above threshold, add to potential matches
+                if max_ratio > 50:  # Lower threshold for potential matches
+                    potential_matches.append({
+                        'id': str(stock['_id']),
+                        'display_name': stock['display_name'],
+                        'nse_code': stock.get('identifiers', {}).get('nse_code', ''),
+                        'bse_code': stock.get('identifiers', {}).get('bse_code', ''),
+                        'match_score': max_ratio,
+                        'match_type': max(ratios.items(), key=lambda x: x[1])[0]
+                    })
+            
+            # Sort by match score and return top matches
+            return sorted(potential_matches, key=lambda x: x['match_score'], reverse=True)[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error finding potential matches: {e}")
+            raise
 
     def validate_transactions(self, transactions):
-        """Validate transactions before processing"""
+        """Validate transactions and identify unmatched stocks"""
         validation_results = {
             'valid': [],
+            'unmatched': [],
             'invalid': [],
             'summary': {
                 'total': len(transactions),
                 'valid': 0,
+                'unmatched': 0,
                 'invalid': 0,
                 'errors': {},
-                'matches': {}  # Add matches to summary for verification
+                'matches': {}
             }
         }
 
         for transaction in transactions:
             try:
-                # Find matching stock
+                # Try exact match first
                 stock = self.find_matching_stock(
                     transaction['company_name'],
                     transaction['scrip_code']
                 )
                 
-                if not stock:
-                    raise ValueError(f"No matching stock found for {transaction['company_name']} ({transaction['scrip_code']})")
-
-                # Add match information to summary
-                validation_results['summary']['matches'][transaction['company_name']] = {
-                    'matched_to': stock['display_name'],
-                    'scrip_code': transaction['scrip_code']
-                }
-
-                # Add stock info to transaction
-                transaction['stock_id'] = str(stock['_id'])
-                transaction['stock_name'] = stock['display_name']
-                validation_results['valid'].append(transaction)
-                validation_results['summary']['valid'] += 1
+                if stock:
+                    # Process matched stock
+                    transaction['stock_id'] = str(stock['_id'])
+                    transaction['stock_name'] = stock['display_name']
+                    validation_results['valid'].append(transaction)
+                    validation_results['summary']['valid'] += 1
+                else:
+                    # Find potential matches
+                    potential_matches = self.find_potential_matches(
+                        transaction['company_name'],
+                        transaction['scrip_code']
+                    )
+                    
+                    # Add to unmatched with potential matches
+                    validation_results['unmatched'].append({
+                        'transaction': transaction,
+                        'potential_matches': potential_matches
+                    })
+                    validation_results['summary']['unmatched'] += 1
 
             except Exception as e:
                 error_msg = str(e)
@@ -1041,6 +1184,208 @@ class UpstoxTransactionImporter:
             # Remove the '?' symbol and commas, then convert to float
             return float(amount.replace('?', '').replace(',', ''))
         return float(amount)
+
+@app.route('/transactions/import/map-stocks', methods=['POST'])
+def map_stocks():
+    """Handle stock mapping for unmatched transactions"""
+    try:
+        data = request.json
+        mappings = data.get('mappings', [])
+        temp_transaction_ids = data.get('transaction_ids', [])
+        
+        # Update temporary transactions with mapped stocks
+        for mapping in mappings:
+            db.temp_transactions.update_many(
+                {'company_name': mapping['company_name']},
+                {'$set': {
+                    'stock_id': mapping['selected_stock_id'],
+                    'stock_name': mapping['selected_stock_name']
+                }}
+            )
+        
+        return jsonify({
+            'success': True,
+            'message': f'Successfully mapped {len(mappings)} stocks'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error mapping stocks: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/transactions/import/confirm', methods=['POST'])
+def confirm_import():
+    """Confirm and process mapped transactions"""
+    try:
+        data = request.json
+        logger.info(f"Received confirmation data: {data}")  # Debug log
+        
+        portfolio_id = data.get('portfolio_id')
+        mappings = data.get('mappings', [])
+        
+        if not portfolio_id or not mappings:
+            logger.error("Missing required data")  # Debug log
+            return jsonify({'error': 'Missing required data'}), 400
+
+        # Process transactions
+        processed = 0
+        errors = []
+        portfolio_manager = PortfolioManager(db)
+        
+        for mapping in mappings:
+            try:
+                # Get transaction from temp collection
+                temp_transaction = db.temp_transactions.find_one({
+                    'id': mapping.get('transaction_id')  # Use transaction_id from mapping
+                })
+                
+                if not temp_transaction:
+                    logger.error(f"Transaction not found: {mapping.get('transaction_id')}")
+                    continue
+
+                # Create final transaction document
+                transaction = {
+                    'portfolio_id': portfolio_id,
+                    'stock_id': mapping.get('selected_stock_id'),
+                    'transaction_type': temp_transaction['transaction_type'],
+                    'quantity': Decimal128(str(temp_transaction['quantity'])),
+                    'price': Decimal128(str(temp_transaction['price'])),
+                    'date': temp_transaction['date'],
+                    'status': 'COMPLETED',
+                    'broker': temp_transaction['broker'],
+                    'created_at': datetime.now(timezone.utc),
+                    'updated_at': datetime.now(timezone.utc)
+                }
+
+                # Validate required fields
+                if not all([transaction['stock_id'], transaction['portfolio_id']]):
+                    raise ValueError("Missing stock_id or portfolio_id")
+
+                # Insert into main collection
+                result = db.transactions.insert_one(transaction)
+                
+                # Update portfolio
+                if result.inserted_id:
+                    portfolio_manager.process_transaction(transaction)
+                    processed += 1
+                    # Remove from temp collection
+                    db.temp_transactions.delete_one({'_id': temp_transaction['_id']})
+                
+            except Exception as e:
+                logger.error(f"Error processing mapping: {e}")
+                errors.append({
+                    'transaction_id': mapping.get('transaction_id'),
+                    'error': str(e)
+                })
+        
+        if processed == 0:
+            return jsonify({'error': 'No transactions were processed', 'details': errors}), 400
+
+        return jsonify({
+            'success': True,
+            'processed': processed,
+            'errors': errors
+        })
+        
+    except Exception as e:
+        logger.error(f"Error confirming import: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+def process_matched_transactions(transactions, portfolio_id):
+    """Process transactions that have been matched to stocks"""
+    try:
+        processed = 0
+        errors = []
+        portfolio_manager = PortfolioManager(db)
+
+        for transaction in transactions:
+            try:
+                # Create transaction document
+                transaction_doc = {
+                    'id': str(ObjectId()),
+                    'portfolio_id': portfolio_id,
+                    'stock_id': transaction['stock_id'],
+                    'transaction_type': transaction['transaction_type'],
+                    'quantity': Decimal128(str(transaction['quantity'])),
+                    'price': Decimal128(str(transaction['price'])),
+                    'date': transaction['date'],
+                    'status': 'COMPLETED',
+                    'broker': {'name': 'UPSTOX', 'transaction_id': transaction.get('broker_transaction_id', '')},
+                    'charges': transaction.get('charges', {}),
+                    'created_at': datetime.now(timezone.utc),
+                    'updated_at': datetime.now(timezone.utc)
+                }
+
+                # Insert and process
+                db.transactions.insert_one(transaction_doc)
+                portfolio_manager.process_transaction(transaction_doc)
+                processed += 1
+
+            except Exception as e:
+                errors.append({'transaction': transaction, 'error': str(e)})
+
+        return jsonify({
+            'success': True,
+            'processed': processed,
+            'errors': errors
+        })
+
+    except Exception as e:
+        logger.error(f"Error processing transactions: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/transactions/view-stock-mapping', methods=['GET'])
+def view_stock_mapping():
+    """Display stock mapping page"""
+    try:
+        # Get parameters from URL
+        transaction_ids = request.args.getlist('transaction_ids')
+        portfolio_id = request.args.get('portfolio_id')
+
+        if not transaction_ids or not portfolio_id:
+            return jsonify({'error': 'Missing required parameters'}), 400
+
+        # Fetch transactions from temp collection
+        temp_transactions = list(db.temp_transactions.find({
+            'id': {'$in': transaction_ids}
+        }))
+
+        # Get all stocks from database for dropdown
+        all_stocks = list(db.stocks_collection.find({}, {
+            'display_name': 1,
+            'identifiers.nse_code': 1,
+            '_id': 1
+        }))
+
+        # Format stocks for dropdown
+        stock_options = [{
+            'id': str(stock['_id']),
+            'name': stock['display_name'],
+            'symbol': stock.get('identifiers', {}).get('nse_code', '')
+        } for stock in all_stocks]
+
+        # Get potential matches for each transaction
+        unmatched_data = []
+        for transaction in temp_transactions:
+            unmatched_data.append({
+                'transaction': transaction,
+                'potential_matches': stock_options  # Use all stocks as options
+            })
+
+        return render_template(
+            'transactions/map_stocks.html',
+            unmatched_transactions=unmatched_data,
+            transaction_ids=transaction_ids,
+            portfolio_id=portfolio_id,
+            total_transactions=len(temp_transactions),
+            unmatched_count=len(unmatched_data),
+            all_stocks=stock_options  # Pass all stocks to template
+        )
+
+    except Exception as e:
+        logger.error(f"Error displaying stock mapping page: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     logger.info(f"Starting Flask application...")

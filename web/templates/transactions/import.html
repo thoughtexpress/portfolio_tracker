@@ -205,80 +205,27 @@ async function importUpstoxTransactions() {
     try {
         const response = await fetch('/transactions/import/upstox', {
             method: 'POST',
-            body: formData
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
         });
-
+        
         if (!response.ok) {
             const errorData = await response.json();
-            throw new Error(errorData.error || 'Failed to import transactions');
+            throw new Error(errorData.error || 'Import failed');
         }
-
-        const result = await response.json();
         
-        // Create detailed summary
-        let summaryHTML = `
-            <h3>Import Summary</h3>
-            <p>Total Transactions: ${result.summary.total}</p>
-            <p>Successfully Processed: ${result.processed}</p>
-            <p>Failed: ${result.failed}</p>
-            
-            <h4>Stock Matches:</h4>
-            <table class="matches-table">
-                <thead>
-                    <tr>
-                        <th>Upstox Name</th>
-                        <th>Matched To</th>
-                        <th>Scrip Code</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${Object.entries(result.summary.matches).map(([upstoxName, match]) => `
-                        <tr>
-                            <td>${upstoxName}</td>
-                            <td>${match.matched_to}</td>
-                            <td>${match.scrip_code}</td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        `;
-
-        if (result.summary.invalid > 0) {
-            summaryHTML += `
-                <h4>Validation Errors:</h4>
-                <ul>
-                ${Object.entries(result.summary.errors).map(([error, count]) => 
-                    `<li>${error}: ${count} transaction(s)</li>`
-                ).join('')}
-                </ul>
-            `;
+        const data = await response.json();
+        
+        if (data.redirect) {
+            window.location.href = data.redirect;
+        } else if (data.error) {
+            throw new Error(data.error);
         }
-
-        if (result.errors.length > 0) {
-            summaryHTML += `
-                <h4>Processing Errors:</h4>
-                <ul>
-                ${result.errors.map(error => 
-                    `<li>${error.transaction.company_name}: ${error.error}</li>`
-                ).join('')}
-                </ul>
-            `;
-        }
-
-        // Show results in a modal
-        showModal('Import Results', summaryHTML);
-
-        if (result.processed > 0) {
-            // Redirect only if some transactions were processed
-            setTimeout(() => {
-                window.location.href = '/transactions' + 
-                    (result.status === 'pending' ? '?status=pending' : '');
-            }, 5000);
-        }
-
+        
     } catch (error) {
-        console.error('Error importing transactions:', error);
-        showModal('Error', 'Error importing transactions: ' + error.message);
+        alert('Error: ' + error.message);
     }
 }
 

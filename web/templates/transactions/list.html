@@ -240,18 +240,24 @@
 
     <div class="pagination">
         {% if page > 1 %}
-        <a href="{{ url_for('list_transactions', page=page-1, **request.args) }}">&laquo; Previous</a>
+        {% set args = request.args.copy() %}
+        {% set _ = args.pop('page', None) %}
+        <a href="{{ url_for('list_transactions', page=page-1, **args) }}">&laquo; Previous</a>
         {% endif %}
-        
+
         {% for p in range(max(1, page-2), min(total_pages+1, page+3)) %}
-        <a href="{{ url_for('list_transactions', page=p, **request.args) }}" 
-           {% if p == page %}class="active"{% endif %}>
-            {{ p }}
-        </a>
+            {% set args = request.args.copy() %}
+            {% set _ = args.pop('page', None) %}
+            <a href="{{ url_for('list_transactions', page=p, **args) }}" 
+               class="{% if p == page %}active{% endif %}">
+                {{ p }}
+            </a>
         {% endfor %}
-        
+
         {% if page < total_pages %}
-        <a href="{{ url_for('list_transactions', page=page+1, **request.args) }}">Next &raquo;</a>
+        {% set args = request.args.copy() %}
+        {% set _ = args.pop('page', None) %}
+        <a href="{{ url_for('list_transactions', page=page+1, **args) }}">&raquo; Next</a>
         {% endif %}
     </div>
 </div>

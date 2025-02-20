@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="stock-mapping-container">
+    <h2>Map Stocks</h2>
+    
+    <div class="alert alert-info">
+        Please map the following unmatched stocks to continue with the import.
+    </div>
+
+    <form id="stockMappingForm">
+        <div class="unmatched-stocks">
+            {% for unmatched in unmatched_transactions %}
+            <div class="stock-mapping-item">
+                <h4>{{ unmatched.transaction.company_name }}</h4>
+                <p>Scrip Code: {{ unmatched.transaction.scrip_code }}</p>
+                
+                <div class="potential-matches">
+                    <label>Select matching stock:</label>
+                    <select name="stock_mapping_{{ loop.index }}" class="stock-mapping-select" 
+                            data-company="{{ unmatched.transaction.company_name }}">
+                        <option value="">-- Select matching stock --</option>
+                        {% for match in unmatched.potential_matches %}
+                        <option value="{{ match.id }}" 
+                                data-name="{{ match.display_name }}"
+                                data-score="{{ match.match_score }}">
+                            {{ match.display_name }} ({{ match.nse_code }}) - Match: {{ match.match_score }}%
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="actions">
+            <button type="submit" class="btn btn-primary">Confirm Mappings</button>
+            <button type="button" class="btn btn-secondary" onclick="window.history.back()">Cancel</button>
+        </div>
+    </form>
+</div>
+
+<script>
+document.getElementById('stockMappingForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    const mappings = [];
+    const selects = document.querySelectorAll('.stock-mapping-select');
+    
+    for (const select of selects) {
+        if (select.value) {
+            mappings.push({
+                company_name: select.dataset.company,
+                selected_stock_id: select.value,
+                selected_stock_name: select.options[select.selectedIndex].dataset.name
+            });
+        }
+    }
+    
+    if (mappings.length < selects.length) {
+        alert('Please map all stocks before continuing');
+        return;
+    }
+    
+    try {
+        // Save mappings
+        const mappingResponse = await fetch('/transactions/import/map-stocks', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                mappings: mappings,
+                transaction_ids: {{ transaction_ids|tojson }}
+            })
+        });
+        
+        if (!mappingResponse.ok) throw new Error('Failed to save mappings');
+        
+        // Confirm import
+        const confirmResponse = await fetch('/transactions/import/confirm', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                portfolio_id: '{{ portfolio_id }}',
+                transaction_ids: {{ transaction_ids|tojson }}
+            })
+        });
+        
+        if (!confirmResponse.ok) throw new Error('Failed to confirm import');
+        
+        const result = await confirmResponse.json();
+        
+        if (result.success) {
+            alert(`Successfully processed ${result.processed} transactions`);
+            window.location.href = '/transactions';
+        } else {
+            throw new Error(result.error || 'Unknown error');
+        }
+        
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+});
+</script>
+
+<style>
+.stock-mapping-container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.stock-mapping-item {
+    border: 1px solid #ddd;
+    padding: 15px;
+    margin-bottom: 15px;
+    border-radius: 4px;
+}
+
+.potential-matches {
+    margin-top: 10px;
+}
+
+.stock-mapping-select {
+    width: 100%;
+    padding: 8px;
+    margin-top: 5px;
+}
+
+.actions {
+    margin-top: 20px;
+    text-align: right;
+}
+
+.btn {
+    margin-left: 10px;
+}
+</style>
+{% endblock %} 
