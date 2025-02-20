@@ -895,6 +895,9 @@ class UpstoxTransactionImporter:
 
     def clean_company_name(self, name):
         """Clean company name for better matching"""
+        if not name:
+            return ""
+            
         # Common replacements
         replacements = {
             ' LIMITED': ' LTD',
@@ -990,46 +993,73 @@ class UpstoxTransactionImporter:
             raise
 
     def find_potential_matches(self, company_name, scrip_code, limit=5):
-        """Find potential stock matches and return them sorted by match score"""
+        """Find potential stock matches from database and return top 5 with match scores"""
         try:
             cleaned_company = self.clean_company_name(company_name)
             potential_matches = []
             
-            # Get all stocks
-            stocks = list(self.db.stocks_collection.find())
+            # Get all stocks from database without status filter first
+            database_stocks = list(db.stocks_collection.find(
+                {},  # Remove status filter
+                {
+                    'display_name': 1,
+                    'identifiers.nse_code': 1,
+                    '_id': 1,
+                    'status': 1  # Add status to check what we have
+                }
+            ))
             
-            for stock in stocks:
+            logger.info(f"Found {len(database_stocks)} total stocks in database")
+            if len(database_stocks) > 0:
+                # Log a sample stock to see the structure
+                logger.info(f"Sample stock: {database_stocks[0]}")
+            else:
+                logger.error("No stocks found in database!")
+            
+            for stock in database_stocks:
                 db_name = stock.get('display_name', '')
+                db_symbol = stock.get('identifiers', {}).get('nse_code', '')
                 db_name_clean = self.clean_company_name(db_name)
                 
                 # Calculate different match ratios
-                ratios = {
-                    'ratio': fuzz.ratio(cleaned_company, db_name_clean),
-                    'partial': fuzz.partial_ratio(cleaned_company, db_name_clean),
-                    'sort': fuzz.token_sort_ratio(cleaned_company, db_name_clean),
-                    'set': fuzz.token_set_ratio(cleaned_company, db_name_clean)
-                }
+                name_ratio = fuzz.ratio(cleaned_company, db_name_clean)
+                partial_ratio = fuzz.partial_ratio(cleaned_company, db_name_clean)
+                sort_ratio = fuzz.token_sort_ratio(cleaned_company, db_name_clean)
+                set_ratio = fuzz.token_set_ratio(cleaned_company, db_name_clean)
                 
                 # Get the highest ratio
-                max_ratio = max(ratios.values())
+                max_ratio = max(name_ratio, partial_ratio, sort_ratio, set_ratio)
+                
+                # Log all potential matches for debugging
+                logger.debug(f"Comparing '{cleaned_company}' with '{db_name_clean}': {max_ratio}%")
                 
                 # If ratio is above threshold, add to potential matches
-                if max_ratio > 50:  # Lower threshold for potential matches
-                    potential_matches.append({
+                if max_ratio > 50:  # Adjust threshold as needed
+                    match_info = {
                         'id': str(stock['_id']),
+                        'name': f"{stock['display_name']} ({db_symbol}) - {max_ratio}% match",
                         'display_name': stock['display_name'],
-                        'nse_code': stock.get('identifiers', {}).get('nse_code', ''),
-                        'bse_code': stock.get('identifiers', {}).get('bse_code', ''),
-                        'match_score': max_ratio,
-                        'match_type': max(ratios.items(), key=lambda x: x[1])[0]
-                    })
+                        'symbol': db_symbol,
+                        'score': max_ratio
+                    }
+                    potential_matches.append(match_info)
+                    logger.info(f"Found match: {match_info['name']} with score {max_ratio}")
             
-            # Sort by match score and return top matches
-            return sorted(potential_matches, key=lambda x: x['match_score'], reverse=True)[:limit]
+            # Sort by match score and get top matches
+            sorted_matches = sorted(
+                potential_matches,
+                key=lambda x: x['score'],
+                reverse=True
+            )[:limit]
+            
+            logger.info(f"Top {len(sorted_matches)} matches for '{company_name}': {sorted_matches}")
+            
+            return sorted_matches
             
         except Exception as e:
             logger.error(f"Error finding potential matches: {e}")
-            raise
+            logger.error(traceback.format_exc())
+            return []
 
     def validate_transactions(self, transactions):
         """Validate transactions and identify unmatched stocks"""
@@ -1338,7 +1368,6 @@ def process_matched_transactions(transactions, portfolio_id):
 def view_stock_mapping():
     """Display stock mapping page"""
     try:
-        # Get parameters from URL
         transaction_ids = request.args.getlist('transaction_ids')
         portfolio_id = request.args.get('portfolio_id')
 
@@ -1350,26 +1379,21 @@ def view_stock_mapping():
             'id': {'$in': transaction_ids}
         }))
 
-        # Get all stocks from database for dropdown
-        all_stocks = list(db.stocks_collection.find({}, {
-            'display_name': 1,
-            'identifiers.nse_code': 1,
-            '_id': 1
-        }))
-
-        # Format stocks for dropdown
-        stock_options = [{
-            'id': str(stock['_id']),
-            'name': stock['display_name'],
-            'symbol': stock.get('identifiers', {}).get('nse_code', '')
-        } for stock in all_stocks]
-
         # Get potential matches for each transaction
+        importer = UpstoxTransactionImporter(db)
         unmatched_data = []
+        
         for transaction in temp_transactions:
+            potential_matches = importer.find_potential_matches(
+                transaction['company_name'],
+                transaction['scrip_code']
+            )
+            
+            logger.info(f"Potential matches for {transaction['company_name']}: {potential_matches}")
+            
             unmatched_data.append({
                 'transaction': transaction,
-                'potential_matches': stock_options  # Use all stocks as options
+                'potential_matches': potential_matches
             })
 
         return render_template(
@@ -1378,8 +1402,7 @@ def view_stock_mapping():
             transaction_ids=transaction_ids,
             portfolio_id=portfolio_id,
             total_transactions=len(temp_transactions),
-            unmatched_count=len(unmatched_data),
-            all_stocks=stock_options  # Pass all stocks to template
+            unmatched_count=len(unmatched_data)
         )
 
     except Exception as e:
