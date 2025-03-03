@@ -16,6 +16,7 @@ from math import ceil
 from fuzzywuzzy import fuzz
 from bson.json_util import dumps, loads
 import json
+from services.stock_master_service import StockMasterService
 
 # Configure logging
 logging.basicConfig(
@@ -993,69 +994,91 @@ class UpstoxTransactionImporter:
             raise
 
     def find_potential_matches(self, company_name, scrip_code, limit=5):
-        """Find potential stock matches from database and return top 5 with match scores"""
+        """Find potential stock matches from master_stocks collection using multiple fields"""
         try:
             cleaned_company = self.clean_company_name(company_name)
             potential_matches = []
             
-            # Get all stocks from database without status filter first
-            database_stocks = list(db.stocks_collection.find(
-                {},  # Remove status filter
+            # Get all stocks from master_stocks collection
+            database_stocks = list(db.master_stocks.find(
+                {'status': 'active'},
                 {
                     'display_name': 1,
-                    'identifiers.nse_code': 1,
-                    '_id': 1,
-                    'status': 1  # Add status to check what we have
+                    'symbol': 1,
+                    'identifiers': 1,
+                    'trading_codes.upstox_transaction': 1,
+                    'trading_codes.upstox_holdings': 1,
+                    '_id': 1
                 }
             ))
             
-            logger.info(f"Found {len(database_stocks)} total stocks in database")
-            if len(database_stocks) > 0:
-                # Log a sample stock to see the structure
-                logger.info(f"Sample stock: {database_stocks[0]}")
-            else:
-                logger.error("No stocks found in database!")
-            
+            logger.info(f"Matching '{company_name}' against {len(database_stocks)} master stocks")
+
             for stock in database_stocks:
-                db_name = stock.get('display_name', '')
-                db_symbol = stock.get('identifiers', {}).get('nse_code', '')
-                db_name_clean = self.clean_company_name(db_name)
+                # Get all possible matching fields
+                stock_name = stock.get('display_name', '')
+                stock_symbol = stock.get('symbol', '')
+                upstox_transaction = stock.get('trading_codes', {}).get('upstox_transaction', '')
+                upstox_holdings = stock.get('trading_codes', {}).get('upstox_holdings', '')
                 
-                # Calculate different match ratios
-                name_ratio = fuzz.ratio(cleaned_company, db_name_clean)
-                partial_ratio = fuzz.partial_ratio(cleaned_company, db_name_clean)
-                sort_ratio = fuzz.token_sort_ratio(cleaned_company, db_name_clean)
-                set_ratio = fuzz.token_set_ratio(cleaned_company, db_name_clean)
+                # Clean all names for comparison
+                cleaned_stock_name = self.clean_company_name(stock_name)
+                cleaned_upstox_transaction = self.clean_company_name(upstox_transaction)
                 
-                # Get the highest ratio
-                max_ratio = max(name_ratio, partial_ratio, sort_ratio, set_ratio)
+                # Try exact matches first
+                if (scrip_code and scrip_code == stock_symbol) or \
+                   (cleaned_company == cleaned_stock_name) or \
+                   (cleaned_company == stock_symbol) or \
+                   (cleaned_company == upstox_holdings) or \
+                   (cleaned_company == cleaned_upstox_transaction):
+                    
+                    logger.info(f"Found exact match: {stock_name} ({stock_symbol})")
+                    return [{
+                        'id': str(stock['_id']),
+                        'name': f"{stock_name} ({stock_symbol}) - 100% match",
+                        'display_name': stock_name,
+                        'symbol': stock_symbol,
+                        'score': 100
+                    }]
+
+                # Calculate fuzzy match scores against multiple fields
+                name_scores = [
+                    fuzz.ratio(cleaned_company, cleaned_stock_name),
+                    fuzz.ratio(cleaned_company, stock_symbol),
+                    fuzz.ratio(cleaned_company, upstox_holdings or ''),
+                    fuzz.ratio(cleaned_company, cleaned_upstox_transaction),
+                    fuzz.partial_ratio(cleaned_company, cleaned_stock_name),
+                    fuzz.token_sort_ratio(cleaned_company, cleaned_stock_name),
+                    fuzz.token_set_ratio(cleaned_company, cleaned_stock_name)
+                ]
                 
-                # Log all potential matches for debugging
-                logger.debug(f"Comparing '{cleaned_company}' with '{db_name_clean}': {max_ratio}%")
+                # Get highest match score
+                max_ratio = max(name_scores)
                 
-                # If ratio is above threshold, add to potential matches
-                if max_ratio > 50:  # Adjust threshold as needed
+                logger.debug(f"Match scores for {stock_name}: max={max_ratio}")
+
+                # If good match found, add to potential matches
+                if max_ratio > 50:
                     match_info = {
                         'id': str(stock['_id']),
-                        'name': f"{stock['display_name']} ({db_symbol}) - {max_ratio}% match",
-                        'display_name': stock['display_name'],
-                        'symbol': db_symbol,
+                        'name': f"{stock_name} ({stock_symbol}) - {max_ratio}% match",
+                        'display_name': stock_name,
+                        'symbol': stock_symbol,
                         'score': max_ratio
                     }
                     potential_matches.append(match_info)
-                    logger.info(f"Found match: {match_info['name']} with score {max_ratio}")
-            
+                    logger.info(f"Found potential match: {match_info['name']}")
+
             # Sort by match score and get top matches
             sorted_matches = sorted(
                 potential_matches,
                 key=lambda x: x['score'],
                 reverse=True
             )[:limit]
-            
-            logger.info(f"Top {len(sorted_matches)} matches for '{company_name}': {sorted_matches}")
-            
+
+            logger.info(f"Found {len(sorted_matches)} matches for {company_name}")
             return sorted_matches
-            
+
         except Exception as e:
             logger.error(f"Error finding potential matches: {e}")
             logger.error(traceback.format_exc())
@@ -1379,22 +1402,53 @@ def view_stock_mapping():
             'id': {'$in': transaction_ids}
         }))
 
-        # Get potential matches for each transaction
+        # Deduplicate transactions based on company name
+        unique_companies = {}
+        for transaction in temp_transactions:
+            company_name = transaction['company_name']
+            if company_name not in unique_companies:
+                unique_companies[company_name] = {
+                    'transaction': transaction,
+                    'related_transaction_ids': [transaction['id']]
+                }
+            else:
+                unique_companies[company_name]['related_transaction_ids'].append(transaction['id'])
+
+        # Get all stocks for manual selection
+        all_stocks = list(db.master_stocks.find(
+            {'status': 'active'},
+            {
+                'display_name': 1,
+                'symbol': 1,
+                '_id': 1,
+                'trading_codes.upstox_transaction': 1
+            }
+        ).sort('display_name', 1))
+
+        # Format all stocks for dropdown
+        all_stocks_formatted = [{
+            'id': str(stock['_id']),
+            'name': f"{stock['display_name']} ({stock.get('symbol', '')}) - {stock.get('trading_codes', {}).get('upstox_transaction', '')}"
+        } for stock in all_stocks]
+
+        # Get potential matches for each unique company
         importer = UpstoxTransactionImporter(db)
         unmatched_data = []
         
-        for transaction in temp_transactions:
+        for company_data in unique_companies.values():
+            transaction = company_data['transaction']
             potential_matches = importer.find_potential_matches(
                 transaction['company_name'],
                 transaction['scrip_code']
             )
             
-            logger.info(f"Potential matches for {transaction['company_name']}: {potential_matches}")
-            
             unmatched_data.append({
                 'transaction': transaction,
-                'potential_matches': potential_matches
+                'potential_matches': potential_matches,
+                'related_transaction_ids': company_data['related_transaction_ids']
             })
+
+        logger.info(f"Reduced {len(temp_transactions)} transactions to {len(unmatched_data)} unique companies")
 
         return render_template(
             'transactions/map_stocks.html',
@@ -1402,12 +1456,81 @@ def view_stock_mapping():
             transaction_ids=transaction_ids,
             portfolio_id=portfolio_id,
             total_transactions=len(temp_transactions),
-            unmatched_count=len(unmatched_data)
+            unique_companies=len(unmatched_data),
+            all_stocks=all_stocks_formatted
         )
 
     except Exception as e:
         logger.error(f"Error displaying stock mapping page: {e}")
         logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/transactions/import/partial-confirm', methods=['POST'])
+def confirm_partial_mappings():
+    """Save partial stock mappings"""
+    try:
+        data = request.json
+        mappings = data.get('mappings', [])
+        portfolio_id = data.get('portfolio_id')
+
+        if not mappings or not portfolio_id:
+            return jsonify({'error': 'Missing required data'}), 400
+
+        processed_count = 0
+        for mapping in mappings:
+            # Save confirmed mappings to a temporary collection
+            db.confirmed_mappings.insert_one({
+                'transaction_ids': mapping['transaction_ids'],
+                'stock_id': mapping['selected_stock_id'],
+                'portfolio_id': portfolio_id,
+                'confirmed_at': datetime.now(timezone.utc)
+            })
+            processed_count += len(mapping['transaction_ids'])
+
+        # Get total pending transactions
+        total_transactions = db.temp_transactions.count_documents({'portfolio_id': portfolio_id})
+        pending_count = total_transactions - processed_count
+
+        return jsonify({
+            'success': True,
+            'processed': processed_count,
+            'pending': pending_count
+        })
+
+    except Exception as e:
+        logger.error(f"Error saving partial mappings: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/stocks/create-missing', methods=['POST'])
+def create_missing_stocks():
+    """Create missing stocks using StockMasterService"""
+    try:
+        data = request.json
+        unmapped_stocks = data.get('stocks', [])
+        
+        # Initialize with database connection
+        stock_service = StockMasterService()
+        created_stocks = []
+
+        for stock in unmapped_stocks:
+            # Try to fetch stock details from external source
+            stock_info = stock_service.fetch_stock_details(stock['company_name'])
+            
+            if stock_info:
+                # Validate and create stock entry
+                created = stock_service.create_stock_entry(stock_info)
+                if created:
+                    created_stocks.append(stock['company_name'])
+                    logger.info(f"Created stock entry for {stock['company_name']}")
+
+        return jsonify({
+            'success': True,
+            'created': len(created_stocks),
+            'stocks': created_stocks
+        })
+
+    except Exception as e:
+        logger.error(f"Error creating stocks: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
